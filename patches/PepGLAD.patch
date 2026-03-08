@@ -1,0 +1,33 @@
+diff --git a/api/run.py b/api/run.py
+index 773a539..6fc594f 100644
+--- a/api/run.py
++++ b/api/run.py
+@@ -154,7 +154,7 @@ def design(mode, ckpt, gpu, pdbs, epitope_defs, n_samples, out_dir,
+         identifiers = [splitext(basename(pdb))[0] for pdb in pdbs]
+     # load model
+     device = torch.device('cpu' if gpu == -1 else f'cuda:{gpu}')
+-    model = torch.load(ckpt, map_location='cpu')
++    model = torch.load(ckpt, map_location='cpu', weights_only=False)
+     model.to(device)
+     model.eval()
+ 
+@@ -271,4 +271,4 @@ if __name__ == '__main__':
+         identifiers=[os.path.basename(os.path.splitext(args.pdb)[0])], # file name (name of each output candidate)
+         lengths_range=[(args.length_min, args.length_max)] if args.mode == 'codesign' else None,    # range of acceptable peptide lengths, left inclusive, right exclusive
+         seqs=[args.peptide_seq] if args.mode == 'struct_pred' else None                             # peptide sequences for structure prediction
+-    )
+\ No newline at end of file
++    )
+diff --git a/evaluation/dG/openmm_relaxer.py b/evaluation/dG/openmm_relaxer.py
+index f2c0d17..f12d578 100644
+--- a/evaluation/dG/openmm_relaxer.py
++++ b/evaluation/dG/openmm_relaxer.py
+@@ -12,7 +12,7 @@ LENGTH = unit.angstroms
+ 
+ class ForceFieldMinimizer(object):
+ 
+-    def __init__(self, stiffness=10.0, max_iterations=0, tolerance=2.39*unit.kilocalories_per_mole, platform='CUDA'):
++    def __init__(self, stiffness=10.0, max_iterations=0, tolerance=10*unit.kilojoules_per_mole/unit.nanometer, platform='CUDA'):
+         super().__init__()
+         self.stiffness = stiffness
+         self.max_iterations = max_iterations

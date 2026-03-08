@@ -1,6 +1,5 @@
 name: allopep
 channels:
-  - defaults
   - conda-forge
   - bioconda
   - nvidia
@@ -47,6 +46,7 @@ dependencies:
   - tqdm=4.67.1
   - xmltodict
   - pip
+  - transformers
   - pip:
     - matplotlib-venn
     - nbdime

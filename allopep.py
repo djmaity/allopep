@@ -8,17 +8,22 @@ import os
 import subprocess
 
 # Local imports
+import count_clashes
 import pocket_mean_gaps_score
 import run_gaps
+
+import vina_score
 
 parser = argparse.ArgumentParser(
     prog='python mlsim.py', description='Pipeline for allosteric peptide design')
 parser.add_argument('pdb_file')
-parser.add_argument('--max_rank', default=1, type=int,
+parser.add_argument('--max_rank', default=None, type=int,
     help='Maximum ranked allosteric pocket by GAPS to use for peptide design using PepGLAD')
 parser.add_argument('--length_min', default=5, type=int,
     help='Minimum length of the predicted peptide')
 parser.add_argument('--length_max', default=10, type=int,
+    help='Maximum length of the predicted peptide')
+parser.add_argument('--num_samples', default=10, type=int,
     help='Maximum length of the predicted peptide')
 args = parser.parse_args()
 
@@ -51,10 +56,9 @@ os.makedirs(ALLOSTERIC_SITES_DIR, exist_ok=True)
 pepgald_env = os.environ.copy()
 pepgald_env['RAY_ACCEL_ENV_VAR_OVERRIDE_ON_ZERO'] = '0'
 
-if 0 < args.max_rank <= len(pocket_scores):
+MAX_RANK = len(pocket_scores)
+if args.max_rank is not None and 0 < args.max_rank <= len(pocket_scores):
     MAX_RANK = args.max_rank
-else:
-    MAX_RANK = len(pocket_scores)
 
 for rank, pocket in enumerate(pocket_scores[:MAX_RANK], start=1):
     # Write the JSON input file for PepGLAD
@@ -71,10 +75,23 @@ for rank, pocket in enumerate(pocket_scores[:MAX_RANK], start=1):
         '--out_dir', PEPGLAD_OUT_DIR,
         '--length_min', str(args.length_min),
         '--length_max', str(args.length_max),
-        '--n_samples', '10'
+        '--n_samples', str(args.num_samples)
     ], cwd='PepGLAD', env=pepgald_env, check=True)
 
-
+    # Calculate AutoDock Vina Score
+    for i in range(args.num_samples):
+        pepglad_prediction = f'{OUT_DIR}/{prefix}_PepGLAD_outputs/{prefix}_allosteric_site_{rank}_codesign/{prefix}_{i}.pdb'
+        clashes = count_clashes.count_clashes(pdb_file=pepglad_prediction)
+        if clashes > 0:
+            print(f'{prefix}_{i}', 'Steric Clashes')
+        else:
+            peptide_chain = 'B'  # TODO: write code to automatically detect peptide chain
+            score = vina_score.vina_score(
+                pdb_file=pepglad_prediction, peptide_chain=peptide_chain)
+            if score is not None:
+                print(*score, 'kcal/mol')
+            else:
+                print([score])
 
 # # Calculate Rosetta Score of the Predicted Peptides
 # with open(f'output/{prefix}_output_pdb_files.txt', 'w') as rosetta_input:

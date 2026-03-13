@@ -7,7 +7,7 @@ import re
 import statistics
 import zipfile
 
-import Bio.Align
+# import Bio.Align
 import Bio.SeqIO
 from Bio.PDB.PDBParser import PDBParser
 

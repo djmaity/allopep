@@ -24,6 +24,7 @@ dependencies:
   - mmseqs2
   - more-itertools=10.7.0
   - numpy=2.3.1
+  - openbabel
   - openmm=8.2.0
   - pandas=2.3.1
   - pdbfixer=1.11
@@ -47,6 +48,7 @@ dependencies:
   - xmltodict
   - pip
   - transformers
+  - vina
   - pip:
     - matplotlib-venn
     - nbdime

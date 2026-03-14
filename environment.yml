@@ -1,4 +1,3 @@
-name: allopep
 channels:
   - conda-forge
   - bioconda
@@ -6,53 +5,38 @@ channels:
   - pyg
   - pytorch
   - salilab
-  - https://conda.graylab.jhu.edu
 dependencies:
-  - python=3.12.11
-  - biopython=1.85
-  - fpocket
+  - python=3.9
+  - setuptools>=71.0.2,<80.9
+  - biopython=1.80
+  - fpocket=4.2.2
   - freesasa=2.2.1
   - gemmi=0.7.3
-  - h5py=3.14.0
-  - ipywidgets=8.1.7
-  - jupyter=1.1.1
-  - jupyterlab-git=0.51.2
-  - jupyterlab=4.4.4
-  - libboost=1.86.0
-  - matplotlib=3.10.3
-  - mkl=2023.0.0
-  - mmseqs2
-  - more-itertools=10.7.0
-  - numpy=2.3.1
+  - h5py=3.13.0
+  - libboost=1.84.0
+  - mkl=2024.0.0
+  - mmseqs2=16.747c6
+  - numpy=1.21.5
+  - nvidia::cudatoolkit=11.7.0
+  - openmm=8.0.0
   - openbabel
-  - openmm=8.2.0
-  - pandas=2.3.1
-  - pdbfixer=1.11
-  - pillow=11.3.0
-  - plotly=6.2.0
-  - pyg::pytorch-scatter=2.1.2
-  - pytorch::pytorch-cuda=12.4
-  - pytorch::pytorch=2.4.1
-  - pytorch::torchaudio=2.4.1
-  - pytorch::torchvision=0.19.1
-  - pyyaml
-  - rdkit=2025.03.4
-  - rosetta
-  - salilab::dssp
-  - scikit-image=0.25.2
-  - scikit-learn=1.7.0
-  - scipy=1.16.0
+  - pandas=2.0.0
+  - pdbfixer=1.9
+  - pyg::pytorch-scatter=2.1.1
+  - pytorch::pytorch-cuda=11.7
+  - pytorch::pytorch=1.13.1
+  - pyyaml=6.0.2
+  - rdkit=2024.03.6
+  - salilab::dssp=3.0.0
+  - scikit-learn=1.6.1
+  - scipy=1.10.1
   - sympy=1.14.0
-  - tensorboard
+  - tensorboard=2.20.0
+  - torchaudio=0.13.1
+  - torchvision=0.14.1
   - tqdm=4.67.1
-  - xmltodict
+  - vina=1.2.6
   - pip
-  - transformers
-  - vina
   - pip:
-    - matplotlib-venn
-    - nbdime
-    - py-packman
-    - SPARQLWrapper
-    - statsmodels
+    - py-packman==1.3.6
     - ray

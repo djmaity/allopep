@@ -215,6 +215,9 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
+# Exclude pepGLAD weights downloaded by install.sh
+checkpoints.zip
+
 # Directories to ignore
 APOP/
 GAPS/

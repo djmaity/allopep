@@ -207,4 +207,6 @@ df_peptide.drop(columns='structure', inplace=True)
 
 df_interface = df_protein + df_peptide - df_complex
 df_interface.dropna(inplace=True)
+
+df_interface.to_csv(f'{ROSETTA_SCORE_DIR}/{prefix}_rosetta_interface_scores.csv')
 print(df_interface)

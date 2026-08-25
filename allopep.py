@@ -5,10 +5,8 @@
 import argparse
 import json
 import os
-import re
 import shutil
 import subprocess
-from glob import glob
 from pathlib import Path
 import pandas as pd
 
@@ -127,6 +125,7 @@ print(df)
 df.to_csv(f'{OUT_DIR}/pocket_scores.csv', index=False)
 
 
+generated_peptides = []
 for rank, patch in enumerate(spatial_patches[:MAX_RANK], start=1):
     # Write the JSON input file for PepGLAD
     JSON_FILENAME = f'{OUT_DIR}/{prefix}_allosteric_sites/{prefix}_allosteric_site_{rank}.json'
@@ -134,7 +133,12 @@ for rank, patch in enumerate(spatial_patches[:MAX_RANK], start=1):
         json.dump(patch.as_pepglad_pocket(), json_file)
 
     # Run PepGLAD
-    PEPGLAD_OUT_DIR = f'../{OUT_DIR}/{prefix}_PepGLAD_outputs/{prefix}_allosteric_site_{rank}_codesign'
+    codesign_output_dir = (
+        Path(OUT_DIR)
+        / f'{prefix}_PepGLAD_outputs'
+        / f'{prefix}_allosteric_site_{rank}_codesign'
+    )
+    PEPGLAD_OUT_DIR = f'../{codesign_output_dir}'
     subprocess.run([
         'python', '-m', 'api.run', '--mode', 'codesign',
         '--pdb', full_pdb_path,
@@ -144,6 +148,16 @@ for rank, patch in enumerate(spatial_patches[:MAX_RANK], start=1):
         '--length_max', str(args.length_max),
         '--n_samples', str(args.num_samples)
     ], cwd='PepGLAD', env=pepgald_env, check=True)
+
+    for sample_index in range(args.num_samples):
+        output_pdb_path = codesign_output_dir / f'{prefix}_{sample_index}.pdb'
+        if not output_pdb_path.is_file():
+            raise FileNotFoundError(
+                f'PepGLAD did not produce expected output: {output_pdb_path}'
+            )
+        generated_peptides.append(
+            (output_pdb_path, prefix, rank, sample_index)
+        )
 
     # # Calculate AutoDock Vina Score
     # for i in range(args.num_samples):
@@ -160,26 +174,16 @@ for rank, patch in enumerate(spatial_patches[:MAX_RANK], start=1):
     #         else:
     #             print([score])
 
-codesign_dir_pattern = re.compile(r'(\S+)_allosteric_site_(\d+)_codesign')
-pepglad_pdb_pattern = re.compile(r'\S+_(\d+)')
-
 ROSETTA_SCORE_DIR = Path(f'{OUT_DIR}/{prefix}_rosetta_score')
 ROSETTA_SCORE_DIR.mkdir(parents=True, exist_ok=True)
 tmp_array = []
-for output_pdb_file in glob(
-        f'{OUT_DIR}/*_PepGLAD_outputs/*_allosteric_site_*_codesign/*.pdb'):
-    output_pdb_path = Path(output_pdb_file)
-
-    match1 = codesign_dir_pattern.fullmatch(output_pdb_path.parent.name)
-    match2 = pepglad_pdb_pattern.fullmatch(output_pdb_path.stem)
-    if match1 and match2:
-        prefix = match1.group(1)
-        allosteric_site_rank = int(match1.group(2))
-        sample_index = int(match2.group(1))
-        tmp_array.append((prefix, allosteric_site_rank, sample_index))
-
-    rosetta_pdb_filename = f'{ROSETTA_SCORE_DIR}/{prefix}_allosteric_site_{allosteric_site_rank}_sample_{sample_index}.pdb'
-    shutil.copy(output_pdb_file, rosetta_pdb_filename)
+for output_pdb_path, run_prefix, rank, sample_index in generated_peptides:
+    rosetta_pdb_filename = (
+        ROSETTA_SCORE_DIR
+        / f'{run_prefix}_allosteric_site_{rank}_sample_{sample_index}.pdb'
+    )
+    shutil.copy(output_pdb_path, rosetta_pdb_filename)
+    tmp_array.append((run_prefix, rank, sample_index))
 
 # Sort the array by prefix, rank, and index
 tmp_array.sort(key=lambda x: (x[0], x[1], x[2]))
@@ -188,11 +192,11 @@ tmp_array.sort(key=lambda x: (x[0], x[1], x[2]))
 rosetta_input = f'{ROSETTA_SCORE_DIR}/{prefix}_pdb_file_list.txt'
 rosetta_input_file = open(rosetta_input, 'w')
 
-for prefix, rank, i in tmp_array:
-    rosetta_pdb_filename = f'{ROSETTA_SCORE_DIR}/{prefix}_allosteric_site_{rank}_sample_{i}.pdb'
+for run_prefix, rank, i in tmp_array:
+    rosetta_pdb_filename = f'{ROSETTA_SCORE_DIR}/{run_prefix}_allosteric_site_{rank}_sample_{i}.pdb'
     clashes = count_clashes.count_clashes(pdb_file=rosetta_pdb_filename)
     if clashes > 0:
-        print(f'{prefix}_{i}', 'Steric Clashes')
+        print(f'{run_prefix}_{i}', 'Steric Clashes')
     else:
         split_protein_peptide(
             pdb_file=rosetta_pdb_filename,

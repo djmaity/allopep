@@ -1,10 +1,12 @@
 """ Run GAPS to predict peptide binding sites """
 
+import math
 import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Tuple, Union
 
+import freesasa
 import torch as pt
 from Bio.PDB import NeighborSearch, PDBParser
 from Bio.PDB.Residue import Residue
@@ -50,19 +52,35 @@ def _residue_id(residue: Residue) -> ResidueId:
     return chain.id, number, insertion_code
 
 
+def _relative_sasa(residue: Residue, residue_areas: dict) -> float:
+    """Return the FreeSASA relative accessibility for a residue."""
+
+    chain, number, insertion_code = _residue_id(residue)
+    residue_number = f"{number}{insertion_code.strip()}"
+    try:
+        relative_sasa = residue_areas[chain][residue_number].relativeTotal
+    except KeyError:
+        return 0.0
+    return relative_sasa if math.isfinite(relative_sasa) else 0.0
+
+
 def find_high_bfactor_spatial_patches(
     pdb_file: Union[str, Path],
     bfactor_threshold: float = 0.5,
     distance_cutoff: float = 5.0,
     min_patch_size: int = 3,
+    surface_rsa_threshold: float = 0.2,
 ) -> List[SpatialPatch]:
-    """Find connected patches of residues with high GAPS scores.
+    """Find connected surface patches of residues with high GAPS scores.
 
     A residue is retained when its mean atomic B-factor is greater than or
-    equal to ``bfactor_threshold``. Two retained residues are connected when
-    any pair of their non-hydrogen atoms is within ``distance_cutoff`` Angstrom.
-    Connections may cross chain boundaries. Only the first model in the PDB is
-    considered.
+    equal to ``bfactor_threshold`` and its relative solvent-accessible surface
+    area (RSA) is at least ``surface_rsa_threshold``. RSA is calculated over
+    the complete first model so that atoms in neighboring chains can occlude
+    one another. A threshold of 0.2 therefore requires at least 20 percent of
+    the residue's reference surface area to be exposed. Two retained surface
+    residues are connected when any pair of their non-hydrogen atoms is within
+    ``distance_cutoff`` Angstrom. Connections may cross chain boundaries.
 
     Patches are ranked by mean B-factor, then by patch size. Hetero residues
     and water are ignored.
@@ -74,6 +92,8 @@ def find_high_bfactor_spatial_patches(
         raise ValueError("distance_cutoff must be greater than 0")
     if min_patch_size < 1:
         raise ValueError("min_patch_size must be at least 1")
+    if not 0.0 <= surface_rsa_threshold <= 1.0:
+        raise ValueError("surface_rsa_threshold must be between 0 and 1")
 
     pdb_path = Path(pdb_file)
     if not pdb_path.is_file():
@@ -90,9 +110,18 @@ def find_high_bfactor_spatial_patches(
         for residue in model.get_residues()
         if residue.id[0] == " "
     }
-    selected = {
+    score_candidates = {
         residue for residue, score in residue_scores.items()
         if score >= bfactor_threshold
+    }
+    if not score_candidates:
+        return []
+
+    sasa_result = freesasa.calcBioPDB(structure)[0]
+    residue_areas = sasa_result.residueAreas()
+    selected = {
+        residue for residue in score_candidates
+        if _relative_sasa(residue, residue_areas) >= surface_rsa_threshold
     }
     if not selected:
         return []
@@ -147,14 +176,16 @@ def select_contiguous_high_bfactor_residues(
     bfactor_threshold: float = 0.5,
     distance_cutoff: float = 5.0,
     min_patch_size: int = 3,
+    surface_rsa_threshold: float = 0.2,
 ) -> List[list]:
-    """Return the best high-GAPS-score patch in PepGLAD format."""
+    """Return the best high-GAPS-score surface patch in PepGLAD format."""
 
     patches = find_high_bfactor_spatial_patches(
         pdb_file=pdb_file,
         bfactor_threshold=bfactor_threshold,
         distance_cutoff=distance_cutoff,
         min_patch_size=min_patch_size,
+        surface_rsa_threshold=surface_rsa_threshold,
     )
     return patches[0].as_pepglad_pocket() if patches else []
 

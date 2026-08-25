@@ -5,17 +5,19 @@
 import argparse
 import json
 import os
+import re
+import shutil
 import subprocess
+from glob import glob
+from pathlib import Path
+import pandas as pd
+
+from Bio.PDB import PDBIO, PDBParser, Select
 
 # Local imports
 import count_clashes
-import pocket_mean_gaps_score
 import run_gaps
-
 import vina_score
-<<<<<<< Updated upstream
-from glob import glob
-=======
 
 
 
@@ -71,7 +73,6 @@ def split_protein_peptide(pdb_file, peptide_chain=None):
     io.save(f'{peptide_filename}.pdb', SelectPeptideChain())
     io.save(f'{protein_filename}.pdb', SelectProteinChain())
 
->>>>>>> Stashed changes
 
 parser = argparse.ArgumentParser(
     prog='python allopep.py', description='Pipeline for allosteric peptide design')
@@ -91,25 +92,14 @@ args = parser.parse_args()
 prefix = os.path.splitext(os.path.basename(args.pdb_file))[0]
 full_pdb_path = os.path.abspath(args.pdb_file)
 OUT_DIR = f'output/{prefix}_output'
-apop_out_file = os.path.abspath(f'{OUT_DIR}/{prefix}_apop_output.zip')
 
-# # Run GAPS to get peptide binding sites
-# run_gaps.run_gaps(full_pdb_path, out_dir=OUT_DIR)
+# Run GAPS to get peptide binding sites
+run_gaps.run_gaps(full_pdb_path, out_dir=OUT_DIR)
 
-<<<<<<< Updated upstream
-# # Run APOP to get allosteric pockets
-# subprocess.run(['python', '../APOP/apop.py', full_pdb_path,
-#                 '--output', apop_out_file],
-#                 cwd='output', check=True)
-
-=======
->>>>>>> Stashed changes
-# Calculate mean GAPS score of the APOP pockets
-pocket_scores = pocket_mean_gaps_score.pocket_mean_gaps_score(
-    input_file=full_pdb_path,
-    apop_file=apop_out_file,
-    gaps_file=f'{OUT_DIR}/{prefix}_GAPS_output.pdb'
-    )
+# Find spatial patches with high GAPS scores
+spatial_patches = run_gaps.find_high_bfactor_spatial_patches(
+    pdb_file=f'{OUT_DIR}/{prefix}_GAPS_output.pdb'
+)
 
 # TODO: Check if allosteric pocket overlaps active site pocket using Jaccard Index
 
@@ -120,38 +110,40 @@ os.makedirs(ALLOSTERIC_SITES_DIR, exist_ok=True)
 pepgald_env = os.environ.copy()
 pepgald_env['RAY_ACCEL_ENV_VAR_OVERRIDE_ON_ZERO'] = '0'
 
-MAX_RANK = len(pocket_scores)
-if args.max_rank is not None and 0 < args.max_rank <= len(pocket_scores):
+MAX_RANK = len(spatial_patches)
+if args.max_rank is not None and 0 < args.max_rank <= len(spatial_patches):
     MAX_RANK = args.max_rank
 
-import pandas as pd
-df = pd.DataFrame(data=pocket_scores,
-                  columns=['pocket_filename', 'pocket',
-                           'apop_score', 'gaps_score'])
-print(df.drop(columns=['pocket']))
+
+df = pd.DataFrame([
+    {
+        'pocket': patch.as_pepglad_pocket(),
+        'mean_gaps_score': patch.mean_bfactor,
+        'max_gaps_score': patch.max_bfactor,
+    }
+    for patch in spatial_patches
+])
+print(df)
 df.to_csv(f'{OUT_DIR}/pocket_scores.csv', index=False)
 
-# Part of Rosetta Score calculation
-rosetta_input = f'{OUT_DIR}/{prefix}_rosetta_input_pdb_file_list.txt'
-rosetta_input_file = open(f'{OUT_DIR}/{prefix}_rosetta_input_pdb_file_list.txt', 'w')
 
-for rank, pocket in enumerate(pocket_scores[:MAX_RANK], start=1):
+for rank, patch in enumerate(spatial_patches[:MAX_RANK], start=1):
     # Write the JSON input file for PepGLAD
     JSON_FILENAME = f'{OUT_DIR}/{prefix}_allosteric_sites/{prefix}_allosteric_site_{rank}.json'
     with open(JSON_FILENAME, 'w', encoding="utf-8") as json_file:
-        json.dump(pocket[1], json_file)
+        json.dump(patch.as_pepglad_pocket(), json_file)
 
-    # # Run PepGLAD
-    # PEPGLAD_OUT_DIR = f'../{OUT_DIR}/{prefix}_PepGLAD_outputs/{prefix}_allosteric_site_{rank}_codesign'
-    # subprocess.run([
-    #     'python', '-m', 'api.run', '--mode', 'codesign',
-    #     '--pdb', full_pdb_path,
-    #     '--pocket', f'../{ALLOSTERIC_SITES_DIR}/{prefix}_allosteric_site_{rank}.json',
-    #     '--out_dir', PEPGLAD_OUT_DIR,
-    #     '--length_min', str(args.length_min),
-    #     '--length_max', str(args.length_max),
-    #     '--n_samples', str(args.num_samples)
-    # ], cwd='PepGLAD', env=pepgald_env, check=True)
+    # Run PepGLAD
+    PEPGLAD_OUT_DIR = f'../{OUT_DIR}/{prefix}_PepGLAD_outputs/{prefix}_allosteric_site_{rank}_codesign'
+    subprocess.run([
+        'python', '-m', 'api.run', '--mode', 'codesign',
+        '--pdb', full_pdb_path,
+        '--pocket', f'../{ALLOSTERIC_SITES_DIR}/{prefix}_allosteric_site_{rank}.json',
+        '--out_dir', PEPGLAD_OUT_DIR,
+        '--length_min', str(args.length_min),
+        '--length_max', str(args.length_max),
+        '--n_samples', str(args.num_samples)
+    ], cwd='PepGLAD', env=pepgald_env, check=True)
 
     # # Calculate AutoDock Vina Score
     # for i in range(args.num_samples):
@@ -168,17 +160,6 @@ for rank, pocket in enumerate(pocket_scores[:MAX_RANK], start=1):
     #         else:
     #             print([score])
 
-<<<<<<< Updated upstream
-    # Calculate Rosetta Score of the Predicted Peptides
-    for i in range(args.num_samples):
-        pepglad_prediction = f'{OUT_DIR}/{prefix}_PepGLAD_outputs/{prefix}_allosteric_site_{rank}_codesign/{prefix}_{i}.pdb'
-        clashes = count_clashes.count_clashes(pdb_file=pepglad_prediction)
-        if clashes > 0:
-            print(f'{prefix}_{i}', 'Steric Clashes')
-        else:
-            peptide_chain = 'B'  # TODO: write code to automatically detect peptide chain
-            rosetta_input_file.write(pepglad_prediction + '\n')
-=======
 codesign_dir_pattern = re.compile(r'(\S+)_allosteric_site_(\d+)_codesign')
 pepglad_pdb_pattern = re.compile(r'\S+_(\d+)')
 
@@ -223,22 +204,15 @@ for prefix, rank, i in tmp_array:
         rosetta_input_file.write(rosetta_pdb_path + '_complex.pdb\n')
         rosetta_input_file.write(rosetta_pdb_path + '_protein.pdb\n')
         rosetta_input_file.write(rosetta_pdb_path + '_peptide.pdb\n')
->>>>>>> Stashed changes
 
-# for output_pdb_file in sorted(glob(
-#         f'output/{prefix}_allosteric_site_*_codesign/{prefix}_*.pdb')):
-#     print(output_pdb_file, file=rosetta_input)
 
 rosetta_input_file.close()
-rosetta_output = f'{OUT_DIR}/{prefix}_rosetta_scores.tsv'
+rosetta_output = f'{ROSETTA_SCORE_DIR}/{prefix}_rosetta_scores.tsv'
 
 # Remove the old Rosetta Score output file to prevent appending to it
 if os.path.isfile(rosetta_output):
     os.remove(rosetta_output)
 
-<<<<<<< Updated upstream
-subprocess.run(['score_jd2', '-in:file:l', rosetta_input, '-out:file:scorefile', rosetta_output])
-=======
 subprocess.run(['score_jd2', '-in:file:l', rosetta_input, '-score:weights', 'rosetta_pdbbind_interface_regression.wts', '-out:file:scorefile', rosetta_output])
 
 # Calculate Interface Rosetta Score
@@ -265,4 +239,3 @@ df_interface.dropna(inplace=True)
 
 df_interface.to_csv(f'{ROSETTA_SCORE_DIR}/{prefix}_rosetta_interface_scores.csv')
 print(df_interface)
->>>>>>> Stashed changes

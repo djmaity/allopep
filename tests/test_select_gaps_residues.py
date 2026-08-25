@@ -3,7 +3,7 @@
 import unittest
 from pathlib import Path
 
-from select_gaps_residues import (
+from run_gaps import (
     find_high_bfactor_spatial_patches,
     select_contiguous_high_bfactor_residues,
 )

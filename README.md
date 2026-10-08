@@ -33,7 +33,7 @@ bash install.sh
 
 The installer:
 
-- installs the compatible APOP, GAPS, and PepGLAD revisions under the
+- installs the compatible GAPS and PepGLAD revisions under the
   repository directory;
 - applies AlloPep's GAPS compatibility patch; and
 - downloads and verifies the PepGLAD v1.0 model checkpoints.
@@ -63,8 +63,5 @@ Replace `input/structure.pdb` with the path to the input PDB file.
 
 ## Output
 
-Results are written beneath the `output` directory in the AlloPep repository.
-
-Do not place the input PDB file inside `output`. APOP creates a file with the
-same name after removing water and hetero atoms, which could overwrite an input
-file stored there.
+Results for `input/structure.pdb` are written beneath
+`output/structure_output` in the AlloPep repository.

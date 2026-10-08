@@ -1,5 +1,4 @@
-#! /usr/bin/env python
-# -*- coding: utf-8 -*-
+#!/usr/bin/env python3
 
 import argparse
 import os
@@ -7,18 +6,17 @@ import statistics
 import subprocess
 
 import numpy as np
-from Bio.PDB import PDBIO, PDBParser, Select
 from vina import Vina
+
+from pdb_utils import split_protein_peptide
 
 
 def argument_parser():
     parser = argparse.ArgumentParser(
         prog='vina_score.py',
         description='Calculate the AutoDock Vina score between one chain and others in a PDB file',
-        epilog='The mean of the AutoDock Vina scores is given in kcal/mol.'
-               'Multiple runs of openbabel results in minor charge differences'
-               'in the third decimal places, which results in differences'
-               ' in the Vina Score calculation.')
+        epilog='The mean AutoDock Vina score is given in kcal/mol. '
+               'Repeated Open Babel runs can produce small charge differences.')
     parser.add_argument('pdb_file', help='Input PDB file')
     parser.add_argument('-c', '--chain', dest='peptide_chain', type=str,
                         help='Peptide chain name', required=True)
@@ -71,22 +69,8 @@ def vina_score(pdb_file, peptide_chain, box_padding=5, num_iterations=1, pH=7.4)
     protein_filename = f'{basename}_protein'
     peptide_filename = f'{basename}_peptide'
 
-    pdb_parser = PDBParser(QUIET=True)
-    structure = pdb_parser.get_structure(basename, pdb_file)
-
-
-    class SelectPeptideChain(Select):
-        def accept_chain(self, chain):
-            return chain.get_id() == peptide_chain
-
-    class SelectProteinChain(Select):
-        def accept_chain(self, chain):
-            return chain.get_id() != peptide_chain
-
-    io = PDBIO()
-    io.set_structure(structure)
-    io.save(f'{peptide_filename}.pdb', SelectPeptideChain())
-    io.save(f'{protein_filename}.pdb', SelectProteinChain())
+    structure = split_protein_peptide(
+        pdb_file, peptide_chain, output_prefix=basename)
 
     atoms = structure[0][peptide_chain].get_atoms()
     coordinates = np.array([atom.get_coord() for atom in atoms])
@@ -96,11 +80,8 @@ def vina_score(pdb_file, peptide_chain, box_padding=5, num_iterations=1, pH=7.4)
                 coordinates.max(axis=0) - coordinates.min(axis=0) + box_padding]
 
     scores = []
+    # Open Babel can produce small charge differences between runs.
     for index in range(num_iterations):
-        """ Multiple runs of openbabel results in minor charge differences
-            in the third decimal places, which results in differences in
-            the Vina Score calculation.
-        """
         score = get_vina_score(protein_filename=protein_filename,
                                peptide_filename=peptide_filename,
                                index=index, center=center,
@@ -112,12 +93,11 @@ def vina_score(pdb_file, peptide_chain, box_padding=5, num_iterations=1, pH=7.4)
     os.remove(f'{peptide_filename}.pdb')
 
     # Average energies in kcal/mol
-    if len(scores) > 1:
-        return basename, statistics.fmean(scores), statistics.stdev(scores)
-    elif len(scores) == 1:
+    if not scores:
+        return None
+    if len(scores) == 1:
         return basename, float(round(scores[0], 3))
-    else:
-        return
+    return basename, statistics.fmean(scores), statistics.stdev(scores)
 
 
 def main():

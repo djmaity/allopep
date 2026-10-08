@@ -3,8 +3,6 @@
 set -Eeuo pipefail
 
 readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-readonly APOP_REPOSITORY="https://github.com/Ambuj-UF/APOP.git"
-readonly APOP_REVISION="2e57ce3911bc4826bed7ffd28e6780b6c98cbfe7"
 readonly GAPS_REPOSITORY="https://github.com/hongliangduan/GAPS.git"
 readonly GAPS_REVISION="c67cba6ca3ef45470bee8bbb2f0c832680c18044"
 readonly PEPGLAD_REPOSITORY="https://github.com/THUNLP-MT/PepGLAD.git"
@@ -155,7 +153,6 @@ main() {
         die 'Required command not found: install sha256sum or shasum'
     fi
 
-    install_repository APOP "${APOP_REPOSITORY}" "${APOP_REVISION}"
     install_repository GAPS "${GAPS_REPOSITORY}" "${GAPS_REVISION}"
     apply_gaps_patch
     install_repository PepGLAD "${PEPGLAD_REPOSITORY}" "${PEPGLAD_REVISION}"

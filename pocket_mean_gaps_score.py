@@ -1,13 +1,11 @@
 """ Calculate the mean GAPS score of APOP pockets """
 
 import io
-import json
 import os
 import re
 import statistics
 import zipfile
 
-# import Bio.Align
 import Bio.SeqIO
 from Bio.PDB.PDBParser import PDBParser
 
@@ -15,19 +13,19 @@ pocket_pattern = re.compile(r"Rank=(\d+)\nPocket name: (\S+)\nAPOP score: (\S+)\
 residue_pattern = re.compile(r"(\d+)([a-zA-Z]+)")
 
 
+def first_residue_by_chain(pdb_file):
+    return {
+        chain.id.split(':')[1]: chain.annotations['start']
+        for chain in Bio.SeqIO.parse(pdb_file, 'pdb-atom')
+    }
+
+
 def pocket_mean_gaps_score(input_file, apop_file, gaps_file):
     """ Calculate the mean GAPS score of APOP pockets """
     prefix = os.path.splitext(os.path.basename(input_file))[0]
 
-    input_first_residue = {}
-    for input_chain in Bio.SeqIO.parse(input_file, "pdb-atom"):
-        input_chain_id = input_chain.id.split(':')[1]
-        input_first_residue[input_chain_id] = input_chain.annotations['start']
-
-    gaps_first_residue = {}
-    for gaps_chain in Bio.SeqIO.parse(gaps_file, "pdb-atom"):
-        gaps_chain_id = gaps_chain.id.split(':')[1]
-        gaps_first_residue[gaps_chain_id] = gaps_chain.annotations['start']
+    input_first_residue = first_residue_by_chain(input_file)
+    gaps_first_residue = first_residue_by_chain(gaps_file)
 
     parser = PDBParser(QUIET=True)
     gaps_structure = parser.get_structure(id=prefix, file=gaps_file)
@@ -37,7 +35,7 @@ def pocket_mean_gaps_score(input_file, apop_file, gaps_file):
         with apop_output_zip.open('apop_output.txt', 'r') as apop_output:
             apop_data = apop_output.read().decode("utf-8")
 
-        for rank, pocket_filename, apop_score, residues in re.findall(pocket_pattern, apop_data):
+        for _, pocket_filename, apop_score, residues in re.findall(pocket_pattern, apop_data):
             apop_pocket_name = os.path.splitext(pocket_filename)[0]
             with apop_output_zip.open(pocket_filename, 'r') as pocket_file:
                 pdb_data = pocket_file.read().decode("utf-8")
@@ -55,9 +53,10 @@ def pocket_mean_gaps_score(input_file, apop_file, gaps_file):
                     b_factors.append(gaps_atom.get_bfactor())
                 gaps_score = statistics.mean(b_factors)
 
-            pocket = []
-            for resid, chain in re.findall(residue_pattern, residues):
-                pocket.append([chain, [int(resid), " "]])
+            pocket = [
+                [chain, [int(resid), " "]]
+                for resid, chain in re.findall(residue_pattern, residues)
+            ]
             pockets.append([pocket_filename, pocket, apop_score, gaps_score])
 
     pockets.sort(key=lambda x: x[3], reverse=True)

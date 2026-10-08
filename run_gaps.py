@@ -198,9 +198,8 @@ def run_gaps(pdb_filepaths, out_dir='.', pytorch_device='cuda'):
 
     model = Model(config_model)
     model.load_state_dict(pt.load(model_weights,
-                                  map_location=pt.device(pytorch_device),
-                                  weights_only=True)
-    )
+                                  map_location=device,
+                                  weights_only=True))
     model = model.eval().to(device)
 
     if not isinstance(pdb_filepaths, list):

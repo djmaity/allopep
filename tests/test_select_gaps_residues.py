@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 from run_gaps import (
     find_high_bfactor_spatial_patches,
+    run_gaps,
     select_contiguous_high_bfactor_residues,
 )
 
@@ -16,6 +17,17 @@ class SpatialResidueSelectionTests(unittest.TestCase):
         self.pdb_path = (
             Path(__file__).parent / "fixtures" / "sample_GAPS_output.pdb"
         )
+
+    def test_prediction_uses_gaps_environment(self):
+        with patch('run_gaps.subprocess.run') as subprocess_run:
+            run_gaps(self.pdb_path, out_dir='output/test', pytorch_device='cpu')
+        command = subprocess_run.call_args.args[0]
+        self.assertEqual(command[:6], [
+            'conda', 'run', '--no-capture-output', '-n', 'gaps', 'python',
+        ])
+        self.assertEqual(command[command.index('--device') + 1], 'cpu')
+        self.assertEqual(command[command.index('--pdb') + 1],
+                         str(self.pdb_path.resolve()))
 
     def test_finds_cross_chain_connected_patch(self):
         patches = find_high_bfactor_spatial_patches(

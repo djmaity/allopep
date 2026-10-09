@@ -3,6 +3,7 @@
 
 import argparse
 import csv
+import filecmp
 import json
 import os
 import re
@@ -37,6 +38,31 @@ def parse_args(argv=None):
     return parser.parse_args(argv)
 
 
+def prepare_input_pdb(input_pdb, out_dir, validate_existing=False):
+    """Keep the input PDB with its output and reuse it for later validation."""
+    input_pdb = Path(input_pdb)
+    saved_pdb = out_dir / input_pdb.name
+    if validate_existing and saved_pdb.is_file():
+        return str(saved_pdb.resolve())
+
+    source = input_pdb.resolve()
+    if not source.is_file():
+        raise FileNotFoundError(source)
+    if not validate_existing:
+        out_dir.mkdir(parents=True, exist_ok=True)
+        if source != saved_pdb.resolve():
+            if saved_pdb.is_file():
+                if not filecmp.cmp(source, saved_pdb, shallow=False):
+                    raise ValueError(
+                        f'{out_dir} already contains a different input PDB: '
+                        f'{saved_pdb}'
+                    )
+            else:
+                shutil.copy2(source, saved_pdb)
+        return str(saved_pdb.resolve())
+    return str(source)
+
+
 def run_pepglad(args, pdb_file, out_dir, prefix, patches):
     sites_dir = out_dir / f'{prefix}_allosteric_sites'
     sites_dir.mkdir(parents=True, exist_ok=True)
@@ -59,6 +85,7 @@ def run_pepglad(args, pdb_file, out_dir, prefix, patches):
             / f'{prefix}_allosteric_site_{rank}_codesign'
         )
         subprocess.run([
+            'conda', 'run', '--no-capture-output', '-n', 'PepGLAD',
             'python', '-m', 'api.run', '--mode', 'codesign',
             '--pdb', pdb_file,
             '--pocket', f'../{pocket_file}',
@@ -78,21 +105,36 @@ def run_pepglad(args, pdb_file, out_dir, prefix, patches):
     return generated
 
 
-def run_openstructure_validation(generated, score_dir, prefix, peptide_chain):
+def run_openstructure_validation(generated, score_dir, prefix, peptide_chain, input_pdb):
     """Check all generated complexes and return paths that pass validation."""
-    ost = os.environ.get('ALLOPEP_OST', 'ost')
-    if shutil.which(ost) is None:
+    ost = shutil.which('ost')
+    if ost is None:
         raise FileNotFoundError(
-            'OpenStructure ost executable not found. Set ALLOPEP_OST to the '
-            'executable in a separate OpenStructure environment.'
+            'OpenStructure ost executable not found in the AlloPep environment.'
         )
     manifest = score_dir / f'{prefix}_pepglad_validation_manifest.json'
     csv_file = score_dir / f'{prefix}_pepglad_validation.csv'
     jsonl_file = score_dir / f'{prefix}_pepglad_validation.jsonl'
-    manifest.write_text(json.dumps([
-        {'path': str(path.resolve()), 'site': rank, 'sample': sample}
-        for path, rank, sample in generated
-    ], indent=2) + '\n', encoding='utf-8')
+    summaries = {}
+    entries = []
+    for path, rank, sample in generated:
+        summary_path = path.parent / 'summary.jsonl'
+        if summary_path not in summaries:
+            records = [json.loads(line) for line in summary_path.read_text(
+                encoding='utf-8').splitlines() if line.strip()]
+            summaries[summary_path] = {record['id']: record for record in records}
+            if len(summaries[summary_path]) != len(records):
+                raise ValueError(f'Duplicate PepGLAD IDs in {summary_path}')
+        if path.stem not in summaries[summary_path]:
+            raise ValueError(f'{path.stem} is missing from {summary_path}')
+        record = summaries[summary_path][path.stem]
+        entries.append({
+            'path': str(path.resolve()), 'site': rank, 'sample': sample,
+            'input_pdb': str(Path(input_pdb).resolve()),
+            'pep_seq': record['pep_seq'], 'pep_chain': record['pep_chain'],
+            'rec_chains': record['rec_chains'],
+        })
+    manifest.write_text(json.dumps(entries, indent=2) + '\n', encoding='utf-8')
     command = [ost, str(Path(__file__).with_name('pepglad_validation.py')),
                '--manifest', str(manifest.resolve()), '--csv', str(csv_file.resolve()),
                '--jsonl', str(jsonl_file.resolve())]
@@ -103,13 +145,17 @@ def run_openstructure_validation(generated, score_dir, prefix, peptide_chain):
         rows = list(csv.DictReader(handle))
     if len(rows) != len(generated):
         raise RuntimeError('OpenStructure result count differs from PepGLAD output count')
+    errors = [row for row in rows if row['status'] == 'error']
+    if errors:
+        raise RuntimeError(f'{len(errors)} OpenStructure checks failed; see {csv_file}')
     return {row['path'] for row in rows if row['status'] == 'valid'}
 
 
-def prepare_rosetta_inputs(generated, score_dir, prefix, peptide_chain):
+def prepare_rosetta_inputs(generated, score_dir, prefix, peptide_chain, input_pdb):
     score_dir.mkdir(parents=True, exist_ok=True)
     list_file = score_dir / f'{prefix}_pdb_file_list.txt'
-    valid = run_openstructure_validation(generated, score_dir, prefix, peptide_chain)
+    valid = run_openstructure_validation(generated, score_dir, prefix,
+                                         peptide_chain, input_pdb)
 
     with list_file.open('w', encoding='utf-8') as handle:
         for output_pdb, rank, sample_index in generated:
@@ -177,15 +223,16 @@ def find_existing_pepglad_outputs(out_dir, prefix):
 def main(argv=None):
     args = parse_args(argv)
     prefix = Path(args.pdb_file).stem
-    pdb_file = os.path.abspath(args.pdb_file)
     out_dir = Path('output') / f'{prefix}_output'
+    pdb_file = prepare_input_pdb(args.pdb_file, out_dir, args.validate_existing)
     if args.validate_existing:
         generated = find_existing_pepglad_outputs(out_dir, prefix)
         if not generated:
             raise FileNotFoundError(f'No PepGLAD PDBs found under {out_dir}')
         score_dir = out_dir / f'{prefix}_rosetta_score'
         score_dir.mkdir(parents=True, exist_ok=True)
-        run_openstructure_validation(generated, score_dir, prefix, args.peptide_chain)
+        run_openstructure_validation(generated, score_dir, prefix,
+                                     args.peptide_chain, pdb_file)
         return
 
     run_gaps.run_gaps(pdb_file, out_dir=str(out_dir))
@@ -207,7 +254,7 @@ def main(argv=None):
     generated = run_pepglad(args, pdb_file, out_dir, prefix, patches)
     score_dir = out_dir / f'{prefix}_rosetta_score'
     list_file = prepare_rosetta_inputs(
-        generated, score_dir, prefix, args.peptide_chain
+        generated, score_dir, prefix, args.peptide_chain, pdb_file
     )
     if not list_file.read_text(encoding='utf-8').strip():
         print('No PepGLAD structures passed OpenStructure validation; '

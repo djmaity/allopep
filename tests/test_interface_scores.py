@@ -1,17 +1,40 @@
 """Regression test for the Rosetta interface-score calculation."""
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from allopep import (find_existing_pepglad_outputs, prepare_rosetta_inputs,
-                     read_interface_scores, run_pepglad)
+from allopep import (find_existing_pepglad_outputs, prepare_input_pdb,
+                     prepare_rosetta_inputs, read_interface_scores,
+                     run_openstructure_validation, run_pepglad)
 from run_gaps import SpatialPatch
 
 
 class InterfaceScoreTests(unittest.TestCase):
+    def test_validation_reuses_saved_input_pdb(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / 'target.pdb'
+            source.write_bytes(b'original input')
+            out_dir = root / 'output' / 'target_output'
+
+            saved = Path(prepare_input_pdb(source, out_dir))
+            self.assertEqual(saved, (out_dir / 'target.pdb').resolve())
+            self.assertEqual(saved.read_bytes(), source.read_bytes())
+
+            source.write_bytes(b'changed input')
+            self.assertEqual(
+                prepare_input_pdb(source, out_dir, validate_existing=True),
+                str(saved),
+            )
+            self.assertEqual(saved.read_bytes(), b'original input')
+            with self.assertRaisesRegex(ValueError, 'different input PDB'):
+                prepare_input_pdb(source, out_dir)
+            self.assertEqual(saved.read_bytes(), b'original input')
+
     def test_pepglad_inputs_and_output_paths(self):
         args = SimpleNamespace(
             max_rank=1, length_min=5, length_max=10, num_samples=1,
@@ -38,6 +61,10 @@ class InterfaceScoreTests(unittest.TestCase):
             self.assertEqual(pocket_file.read_text(), '[["A", [1, " "]]]')
             self.assertEqual(generated, [(output_pdb, 1, 0)])
             command = subprocess_run.call_args.args[0]
+            self.assertEqual(command[:7], [
+                'conda', 'run', '--no-capture-output', '-n', 'PepGLAD',
+                'python', '-m',
+            ])
             self.assertEqual(command[command.index('--pocket') + 1], f'../{pocket_file}')
             self.assertEqual(command[command.index('--out_dir') + 1], f'../{output_pdb.parent}')
 
@@ -48,7 +75,7 @@ class InterfaceScoreTests(unittest.TestCase):
             with patch('allopep.run_openstructure_validation',
                        return_value={str(fixture.resolve())}):
                 list_file = prepare_rosetta_inputs(
-                    [(fixture, 1, 0)], score_dir, 'target', 'B'
+                    [(fixture, 1, 0)], score_dir, 'target', 'B', fixture
                 )
             listed = [Path(line) for line in list_file.read_text().splitlines()]
             self.assertEqual(len(listed), 3)
@@ -64,10 +91,38 @@ class InterfaceScoreTests(unittest.TestCase):
             score_dir = Path(directory) / 'scores'
             with patch('allopep.run_openstructure_validation', return_value=set()):
                 list_file = prepare_rosetta_inputs(
-                    [(fixture, 1, 0)], score_dir, 'target', 'B'
+                    [(fixture, 1, 0)], score_dir, 'target', 'B', fixture
                 )
             self.assertEqual(list_file.read_text(), '')
             self.assertFalse(list(score_dir.glob('*.pdb')))
+
+    def test_validation_manifest_uses_pepglad_summary_and_input(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            site = root / 'codesign'
+            site.mkdir()
+            output = site / 'target_0.pdb'
+            output.touch()
+            (site / 'summary.jsonl').write_text(
+                '{"id":"target_0","pep_seq":"LHLKA","pep_chain":"C",'
+                '"rec_chains":["A","B"]}\n', encoding='utf-8')
+            input_pdb = root / 'input.pdb'
+            input_pdb.touch()
+            score_dir = root / 'scores'
+            score_dir.mkdir()
+            def write_result(command, check):
+                csv_path = Path(command[command.index('--csv') + 1])
+                csv_path.write_text('path,status\n' + str(output.resolve()) + ',valid\n')
+
+            with patch('allopep.shutil.which', return_value='/usr/bin/ost'), \
+                 patch('allopep.subprocess.run', side_effect=write_result):
+                valid = run_openstructure_validation(
+                    [(output, 1, 0)], score_dir, 'target', None, input_pdb)
+            manifest = json.loads((score_dir / 'target_pepglad_validation_manifest.json').read_text())
+            self.assertEqual(valid, {str(output.resolve())})
+            self.assertEqual(manifest[0]['pep_seq'], 'LHLKA')
+            self.assertEqual(manifest[0]['rec_chains'], ['A', 'B'])
+            self.assertEqual(manifest[0]['input_pdb'], str(input_pdb.resolve()))
 
     def test_existing_outputs_reject_missing_samples(self):
         with tempfile.TemporaryDirectory() as directory:

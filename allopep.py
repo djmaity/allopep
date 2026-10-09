@@ -2,15 +2,16 @@
 """AlloPep: allosteric peptide prediction pipeline."""
 
 import argparse
+import csv
 import json
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
 
 import pandas as pd
 
-import count_clashes
 import run_gaps
 from pdb_utils import split_protein_peptide
 
@@ -31,6 +32,8 @@ def parse_args(argv=None):
                         help='Number of predicted peptides per patch')
     parser.add_argument('--peptide-chain', default=None,
                         help='Known peptide chain ID; automatically detected if omitted')
+    parser.add_argument('--validate-existing', action='store_true',
+                        help='Check existing PepGLAD PDBs without rerunning design or scoring')
     return parser.parse_args(argv)
 
 
@@ -75,20 +78,46 @@ def run_pepglad(args, pdb_file, out_dir, prefix, patches):
     return generated
 
 
+def run_openstructure_validation(generated, score_dir, prefix, peptide_chain):
+    """Check all generated complexes and return paths that pass validation."""
+    ost = os.environ.get('ALLOPEP_OST', 'ost')
+    if shutil.which(ost) is None:
+        raise FileNotFoundError(
+            'OpenStructure ost executable not found. Set ALLOPEP_OST to the '
+            'executable in a separate OpenStructure environment.'
+        )
+    manifest = score_dir / f'{prefix}_pepglad_validation_manifest.json'
+    csv_file = score_dir / f'{prefix}_pepglad_validation.csv'
+    jsonl_file = score_dir / f'{prefix}_pepglad_validation.jsonl'
+    manifest.write_text(json.dumps([
+        {'path': str(path.resolve()), 'site': rank, 'sample': sample}
+        for path, rank, sample in generated
+    ], indent=2) + '\n', encoding='utf-8')
+    command = [ost, str(Path(__file__).with_name('pepglad_validation.py')),
+               '--manifest', str(manifest.resolve()), '--csv', str(csv_file.resolve()),
+               '--jsonl', str(jsonl_file.resolve())]
+    if peptide_chain:
+        command.extend(['--peptide-chain', peptide_chain])
+    subprocess.run(command, check=True)
+    with csv_file.open(newline='', encoding='utf-8') as handle:
+        rows = list(csv.DictReader(handle))
+    if len(rows) != len(generated):
+        raise RuntimeError('OpenStructure result count differs from PepGLAD output count')
+    return {row['path'] for row in rows if row['status'] == 'valid'}
+
+
 def prepare_rosetta_inputs(generated, score_dir, prefix, peptide_chain):
     score_dir.mkdir(parents=True, exist_ok=True)
     list_file = score_dir / f'{prefix}_pdb_file_list.txt'
+    valid = run_openstructure_validation(generated, score_dir, prefix, peptide_chain)
 
     with list_file.open('w', encoding='utf-8') as handle:
         for output_pdb, rank, sample_index in generated:
+            if str(output_pdb.resolve()) not in valid:
+                continue
             base = score_dir / f'{prefix}_allosteric_site_{rank}_sample_{sample_index}'
             complex_pdb = Path(f'{base}.pdb')
             shutil.copy(output_pdb, complex_pdb)
-
-            if count_clashes.count_clashes(complex_pdb) > 0:
-                print(f'{prefix}_{sample_index}', 'Steric Clashes')
-                continue
-
             split_protein_peptide(complex_pdb, peptide_chain)
             complex_pdb.rename(f'{base}_complex.pdb')
             for structure in ('complex', 'protein', 'peptide'):
@@ -122,11 +151,42 @@ def read_interface_scores(score_file):
     return interface.dropna()
 
 
+def find_existing_pepglad_outputs(out_dir, prefix):
+    generated = []
+    pattern = re.compile(rf'^{re.escape(prefix)}_allosteric_site_(\d+)_codesign$')
+    for site_dir in (out_dir / f'{prefix}_PepGLAD_outputs').glob('*_codesign'):
+        site = pattern.fullmatch(site_dir.name)
+        if not site:
+            continue
+        paths = {pdb.stem: pdb for pdb in site_dir.glob('*.pdb')}
+        summary = site_dir / 'summary.jsonl'
+        if summary.is_file():
+            expected = {json.loads(line)['id'] for line in summary.read_text(
+                encoding='utf-8').splitlines() if line.strip()}
+            if expected != set(paths):
+                raise ValueError(f'PepGLAD PDBs do not match {summary}: '
+                                 f'missing={sorted(expected - set(paths))}, '
+                                 f'extra={sorted(set(paths) - expected)}')
+        for stem, pdb in paths.items():
+            sample = re.fullmatch(rf'{re.escape(prefix)}_(\d+)', stem)
+            if sample:
+                generated.append((pdb, int(site.group(1)), int(sample.group(1))))
+    return sorted(generated, key=lambda item: (item[1], item[2]))
+
+
 def main(argv=None):
     args = parse_args(argv)
     prefix = Path(args.pdb_file).stem
     pdb_file = os.path.abspath(args.pdb_file)
     out_dir = Path('output') / f'{prefix}_output'
+    if args.validate_existing:
+        generated = find_existing_pepglad_outputs(out_dir, prefix)
+        if not generated:
+            raise FileNotFoundError(f'No PepGLAD PDBs found under {out_dir}')
+        score_dir = out_dir / f'{prefix}_rosetta_score'
+        score_dir.mkdir(parents=True, exist_ok=True)
+        run_openstructure_validation(generated, score_dir, prefix, args.peptide_chain)
+        return
 
     run_gaps.run_gaps(pdb_file, out_dir=str(out_dir))
     patches = run_gaps.find_high_bfactor_spatial_patches(
@@ -149,6 +209,10 @@ def main(argv=None):
     list_file = prepare_rosetta_inputs(
         generated, score_dir, prefix, args.peptide_chain
     )
+    if not list_file.read_text(encoding='utf-8').strip():
+        print('No PepGLAD structures passed OpenStructure validation; '
+              f'see {score_dir / (prefix + "_pepglad_validation.csv")}')
+        return
 
     score_file = score_dir / f'{prefix}_rosetta_scores.tsv'
     score_file.unlink(missing_ok=True)

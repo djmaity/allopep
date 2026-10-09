@@ -221,8 +221,3 @@ def run_gaps(pdb_filepaths, out_dir='.', pytorch_device='cuda'):
             filename = os.path.splitext(os.path.basename(filepath))[0]
             out_file = os.path.join(out_dir, filename + '_GAPS_output.pdb')
             save_pdb(split_by_chain(structure), out_file)
-
-
-if __name__ == '__main__':
-    # TODO: add argument parser
-    run_gaps(['input/2VH7.pdb', 'input/5lvp_holo.pdb'], out_dir='output')

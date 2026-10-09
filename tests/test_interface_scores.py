@@ -6,7 +6,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from allopep import prepare_rosetta_inputs, read_interface_scores, run_pepglad
+from allopep import (find_existing_pepglad_outputs, prepare_rosetta_inputs,
+                     read_interface_scores, run_pepglad)
 from run_gaps import SpatialPatch
 
 
@@ -40,11 +41,12 @@ class InterfaceScoreTests(unittest.TestCase):
             self.assertEqual(command[command.index('--pocket') + 1], f'../{pocket_file}')
             self.assertEqual(command[command.index('--out_dir') + 1], f'../{output_pdb.parent}')
 
-    def test_rosetta_input_lists_only_nonclashing_structures(self):
+    def test_rosetta_input_lists_only_validated_structures(self):
         fixture = Path(__file__).parent / 'fixtures' / 'sample_GAPS_output.pdb'
         with tempfile.TemporaryDirectory() as directory:
             score_dir = Path(directory) / 'scores'
-            with patch('allopep.count_clashes.count_clashes', return_value=0):
+            with patch('allopep.run_openstructure_validation',
+                       return_value={str(fixture.resolve())}):
                 list_file = prepare_rosetta_inputs(
                     [(fixture, 1, 0)], score_dir, 'target', 'B'
                 )
@@ -55,6 +57,29 @@ class InterfaceScoreTests(unittest.TestCase):
                 [path.stem.rsplit('_', 1)[-1] for path in listed],
                 ['complex', 'protein', 'peptide'],
             )
+
+    def test_invalid_structure_is_excluded_from_rosetta(self):
+        fixture = Path(__file__).parent / 'fixtures' / 'sample_GAPS_output.pdb'
+        with tempfile.TemporaryDirectory() as directory:
+            score_dir = Path(directory) / 'scores'
+            with patch('allopep.run_openstructure_validation', return_value=set()):
+                list_file = prepare_rosetta_inputs(
+                    [(fixture, 1, 0)], score_dir, 'target', 'B'
+                )
+            self.assertEqual(list_file.read_text(), '')
+            self.assertFalse(list(score_dir.glob('*.pdb')))
+
+    def test_existing_outputs_reject_missing_samples(self):
+        with tempfile.TemporaryDirectory() as directory:
+            site = (Path(directory) / 'target_PepGLAD_outputs' /
+                    'target_allosteric_site_1_codesign')
+            site.mkdir(parents=True)
+            (site / 'target_0.pdb').touch()
+            (site / 'summary.jsonl').write_text(
+                '{"id":"target_0"}\n{"id":"target_1"}\n', encoding='utf-8'
+            )
+            with self.assertRaisesRegex(ValueError, 'missing=.*target_1'):
+                find_existing_pepglad_outputs(Path(directory), 'target')
 
     def test_combines_matching_positive_structure_scores(self):
         with tempfile.TemporaryDirectory() as directory:

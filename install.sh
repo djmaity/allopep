@@ -141,9 +141,55 @@ install_pepglad_checkpoints() {
     printf 'Installed PepGLAD checkpoints.\n'
 }
 
+environment_exists() {
+    local name="$1"
+    local environments
+    local environment_name
+    local ignored
+
+    environments="$(conda env list)" || die 'Could not list Conda environments'
+    while read -r environment_name ignored; do
+        [[ "${environment_name}" == "${name}" ]] && return 0
+    done <<< "${environments}"
+    return 1
+}
+
+install_environments() {
+    if environment_exists gaps; then
+        printf 'Updating gaps environment...\n'
+    else
+        printf 'Creating gaps environment...\n'
+        conda create -y -n gaps python=3.10
+    fi
+    conda install -y -n gaps python=3.10 pytorch=1.13.1 torchvision=0.14.1 \
+        torchaudio=0.13.1 pytorch-cuda=11.7 -c pytorch -c nvidia
+    conda install -y -n gaps pandas scikit-learn tqdm h5py gemmi \
+        numpy=1.26.4 mkl=2024.0.0 -c conda-forge
+
+    if environment_exists PepGLAD; then
+        printf 'Updating PepGLAD environment...\n'
+        conda env update -n PepGLAD -f "${SCRIPT_DIR}/PepGLAD/env.yaml"
+    else
+        printf 'Creating PepGLAD environment...\n'
+        conda env create -y -f "${SCRIPT_DIR}/PepGLAD/env.yaml"
+    fi
+    conda run --no-capture-output -n PepGLAD \
+        python -m pip install 'ray[default]==2.51.2'
+
+    if environment_exists allopep; then
+        printf 'Updating allopep environment...\n'
+        conda env update -n allopep -f "${SCRIPT_DIR}/environment.yml"
+    else
+        printf 'Creating allopep environment...\n'
+        conda env create -y -n allopep -f "${SCRIPT_DIR}/environment.yml"
+    fi
+    conda run --no-capture-output -n allopep mmtbx.rebuild_rotarama_cache
+}
+
 main() {
     require_command git
     require_command unzip
+    require_command conda
     if ! command -v curl >/dev/null 2>&1 &&
         ! command -v wget >/dev/null 2>&1; then
         die 'Required command not found: install curl or wget'
@@ -157,8 +203,9 @@ main() {
     apply_gaps_patch
     install_repository PepGLAD "${PEPGLAD_REPOSITORY}" "${PEPGLAD_REVISION}"
     install_pepglad_checkpoints
+    install_environments
 
-    printf 'AlloPep dependencies installed successfully.\n'
+    printf 'AlloPep dependencies and environments installed successfully.\n'
 }
 
 main "$@"

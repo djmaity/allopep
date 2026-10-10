@@ -2,7 +2,6 @@ channels:
   - conda-forge
   - bioconda
   - chem_data
-  - https://conda.rosettacommons.org
 dependencies:
   - python=3.12
   - setuptools>=71.0.2,<80.9
@@ -11,12 +10,14 @@ dependencies:
   - chem_data::chem_data=2026.9
   - fpocket=4.2.2
   - freesasa=2.2.1
+  - gemmi=0.7.5
+  - meeko=0.8.0
   - numpy=1.26.4
   - openstructure=2.11.1
-  - openbabel
   - pandas=2.3.3
+  - psutil>=5.9,<8
+  - rdkit>=2024.09,<2027
   - scipy=1.13.1
-  - vina=1.2.6
+  - vina=1.2.7
   - prody       # for Normal Mode Analysis
   - jupyterlab  # For testing notebooks, remove if unused
-  - https://conda.rosettacommons.org::rosetta=2025.12+release.05ba3ce142

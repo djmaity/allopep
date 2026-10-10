@@ -1,4 +1,4 @@
-"""PDB helpers shared by the AlloPep and Vina entry points."""
+"""Helpers for selecting and splitting protein and peptide PDB chains."""
 
 from pathlib import Path
 

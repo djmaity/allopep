@@ -9,9 +9,16 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from allopep import (find_existing_pepglad_outputs, prepare_input_pdb,
-                     rank_pepglad_outputs, run_openstructure_validation,
+                     main, rank_pepglad_outputs, run_openstructure_validation,
                      run_pepglad, write_pymol_script)
-from run_gaps import SpatialPatch
+from pepglad_outputs import DesignOutput, load_design_outputs
+from run_gaps import GuidanceContext, ScoredResidue
+
+
+def design(path, site=1, sample=0, sequence='LHLKA', peptide_chain='B',
+           receptor_chains=('A',)):
+    return DesignOutput(path, site, sample, sequence,
+                        peptide_chain, receptor_chains)
 
 
 class VinaRankingTests(unittest.TestCase):
@@ -31,16 +38,17 @@ class VinaRankingTests(unittest.TestCase):
                     'id': 'target_0', 'rec_chains': ['A', 'B'],
                     'pep_chain': 'C',
                 }) + '\n', encoding='utf-8')
-                generated.append((model, site, 0))
+                generated.append(design(model, site, peptide_chain='C',
+                                        receptor_chains=('A', 'B')))
 
             script = write_pymol_script(generated, input_pdb, root, 'target')
             content = script.read_text(encoding='utf-8')
             self.assertEqual(script.name, 'target_pepglad_aligned.pml')
             self.assertIn(f'load {json.dumps(str(input_pdb.resolve()))}, '
                           'allopep_target_input', content)
-            for model, site, _ in generated:
-                name = f'allopep_target_site_{site}_sample_0'
-                self.assertIn(f'load {json.dumps(str(model.resolve()))}, {name}',
+            for output in generated:
+                name = f'allopep_target_site_{output.site}_sample_0'
+                self.assertIn(f'load {json.dumps(output.resolved_path)}, {name}',
                               content)
                 self.assertIn(
                     f'align ({name} and name CA and (chain A or chain B)), '
@@ -75,8 +83,10 @@ class VinaRankingTests(unittest.TestCase):
     def test_pepglad_inputs_and_output_paths(self):
         args = SimpleNamespace(
             max_rank=1, length_min=5, length_max=10, num_samples=1,
+            score_guidance_strength=1.0,
         )
-        patch_score = SpatialPatch((('A', 1, ' '),), 0.8, 0.9)
+        residue = ScoredResidue('A', 1, ' ', 0.873241, (0.0, 0.0, 0.0), 0.5)
+        context = GuidanceContext(residue, (residue,))
         with tempfile.TemporaryDirectory(dir='.') as directory:
             out_dir = Path(directory) / 'output'
             output_pdb = (
@@ -85,18 +95,22 @@ class VinaRankingTests(unittest.TestCase):
             )
             output_pdb.parent.mkdir(parents=True)
             output_pdb.touch()
+            (output_pdb.parent / 'summary.jsonl').write_text(json.dumps({
+                'id': 'target_0', 'pep_seq': 'LHLKA',
+                'pep_chain': 'B', 'rec_chains': ['A'],
+            }) + '\n', encoding='utf-8')
 
             with patch('allopep.subprocess.run') as subprocess_run:
                 generated = run_pepglad(
-                    args, '/input/target.pdb', out_dir, 'target', [patch_score]
+                    args, '/input/target.pdb', out_dir, 'target', [context]
                 )
 
             pocket_file = (
                 out_dir / 'target_allosteric_sites'
                 / 'target_allosteric_site_1.json'
             )
-            self.assertEqual(pocket_file.read_text(), '[["A", [1, " "]]]')
-            self.assertEqual(generated, [(output_pdb, 1, 0)])
+            self.assertEqual(pocket_file.read_text(), '[["A", [1, " "], 0.873241]]')
+            self.assertEqual(generated, [design(output_pdb)])
             command = subprocess_run.call_args.args[0]
             self.assertEqual(command[:7], [
                 'conda', 'run', '--no-capture-output', '-n', 'PepGLAD',
@@ -104,16 +118,15 @@ class VinaRankingTests(unittest.TestCase):
             ])
             self.assertEqual(command[command.index('--pocket') + 1], f'../{pocket_file}')
             self.assertEqual(command[command.index('--out_dir') + 1], f'../{output_pdb.parent}')
+            self.assertEqual(command[command.index('--score-guidance-strength') + 1], '1.0')
 
     def test_ranks_only_validated_structures_by_lower_vina_score(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             structures = [root / f'target_{i}.pdb' for i in range(4)]
-            generated = [(structures[0], 1, 0), (structures[1], 1, 1),
-                         (structures[2], 2, 0), (structures[3], 2, 1)]
-            valid = {str(structures[0].resolve()): 'B',
-                     str(structures[2].resolve()): 'C',
-                     str(structures[3].resolve()): 'C'}
+            valid = [design(structures[0]),
+                     design(structures[2], 2, 0, peptide_chain='C'),
+                     design(structures[3], 2, 1, peptide_chain='C')]
 
             def write_results(command, check):
                 self.assertTrue(check)
@@ -144,7 +157,7 @@ class VinaRankingTests(unittest.TestCase):
 
             with patch('allopep.subprocess.run', side_effect=write_results) as run:
                 ranked = rank_pepglad_outputs(
-                    generated, valid, root, 'target', box_padding=6,
+                    valid, root, 'target', box_padding=6,
                     hydrogen_policy='rebuild')
             self.assertEqual([(r['rank'], r['site'], r['sample']) for r in ranked],
                              [(1, 2, 0), (2, 1, 0)])
@@ -177,7 +190,7 @@ class VinaRankingTests(unittest.TestCase):
             with patch('allopep.subprocess.run', side_effect=write_failure), \
                  self.assertRaisesRegex(RuntimeError, 'All 1 Vina scoring jobs failed'):
                 rank_pepglad_outputs(
-                    [(pdb, 1, 0)], {str(pdb.resolve()): 'B'}, root, 'target')
+                    [design(pdb)], root, 'target')
             self.assertTrue((root / 'target_vina_results.csv').is_file())
             self.assertFalse((root / 'target_vina_ranked.csv').exists())
 
@@ -202,10 +215,11 @@ class VinaRankingTests(unittest.TestCase):
 
             with patch('allopep.shutil.which', return_value='/usr/bin/ost'), \
                  patch('allopep.subprocess.run', side_effect=write_result):
+                generated = load_design_outputs([(output, 1, 0)])
                 valid = run_openstructure_validation(
-                    [(output, 1, 0)], score_dir, 'target', None, input_pdb)
+                    generated, score_dir, 'target', None, input_pdb)
             manifest = json.loads((score_dir / 'target_pepglad_validation_manifest.json').read_text())
-            self.assertEqual(valid, {str(output.resolve()): 'C'})
+            self.assertEqual(valid, generated)
             self.assertEqual(manifest[0]['pep_seq'], 'LHLKA')
             self.assertEqual(manifest[0]['rec_chains'], ['A', 'B'])
             self.assertEqual(manifest[0]['input_pdb'], str(input_pdb.resolve()))
@@ -221,6 +235,42 @@ class VinaRankingTests(unittest.TestCase):
             )
             with self.assertRaisesRegex(ValueError, 'missing=.*target_1'):
                 find_existing_pepglad_outputs(Path(directory), 'target')
+            (site / 'target_1.pdb').touch()
+            (site / 'summary.jsonl').write_text(''.join(json.dumps({
+                'id': f'target_{sample}', 'pep_seq': 'LHLKA',
+                'pep_chain': 'B', 'rec_chains': ['A'],
+            }) + '\n' for sample in (0, 1)))
+            self.assertEqual(find_existing_pepglad_outputs(
+                Path(directory), 'target'), [
+                    design(site / 'target_0.pdb'),
+                    design(site / 'target_1.pdb', sample=1),
+                ])
+
+    def test_summary_loader_rejects_duplicate_and_missing_ids(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            output = root / 'target_0.pdb'
+            output.touch()
+            summary = root / 'summary.jsonl'
+            record = {'id': 'target_0', 'pep_seq': 'LHLKA',
+                      'pep_chain': 'B', 'rec_chains': ['A']}
+            summary.write_text(json.dumps(record) + '\n' + json.dumps(record) + '\n')
+            with self.assertRaisesRegex(ValueError, 'Duplicate PepGLAD IDs'):
+                load_design_outputs([(output, 1, 0)])
+            record['id'] = 'target_1'
+            summary.write_text(json.dumps(record) + '\n')
+            with self.assertRaisesRegex(ValueError, 'target_0 is missing'):
+                load_design_outputs([(output, 1, 0)])
+
+    def test_invalid_cli_options_fail_before_pipeline_stages(self):
+        for option in ('--length_min 0', '--length_min 8 --length_max 7',
+                       '--num_samples 0', '--score-guidance-strength nan',
+                       '--vina-box-padding inf', '--peptide-chain AA'):
+            with self.subTest(option=option), \
+                 patch('allopep.prepare_input_pdb') as prepare:
+                with self.assertRaises(ValueError):
+                    main(['target.pdb', *option.split()])
+                prepare.assert_not_called()
 
 
 if __name__ == '__main__':

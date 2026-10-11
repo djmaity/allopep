@@ -1,188 +1,184 @@
-""" Run GAPS to predict peptide binding sites """
+"""Run GAPS and choose local receptor contexts from its residue scores."""
 
+import json
 import math
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Tuple, Union
 
 import freesasa
-from Bio.PDB import NeighborSearch, PDBParser
-from Bio.PDB.Residue import Residue
-
-
-ResidueId = Tuple[str, int, str]
+import numpy as np
+from Bio.PDB import PDBParser
 
 
 @dataclass(frozen=True)
-class SpatialPatch:
-    """A connected group of high-scoring residues."""
+class ScoredResidue:
+    chain: str
+    number: int
+    icode: str
+    score: float
+    ca: tuple[float, float, float]
+    relative_sasa: float
 
-    residues: Tuple[ResidueId, ...]
-    mean_bfactor: float
-    max_bfactor: float
+    @property
+    def key(self):
+        return self.chain, self.number, self.icode
 
-    def as_pepglad_pocket(self) -> List[list]:
-        """Return residues in PepGLAD's ``[chain, [number, icode]]`` format."""
-
-        return [[chain, [number, icode]]
-                for chain, number, icode in self.residues]
-
-
-def _mean_bfactor(residue: Residue) -> float:
-    b_factors = [atom.get_bfactor() for atom in residue.get_atoms()]
-    if not b_factors:
-        raise ValueError(f"Residue {residue.get_full_id()} contains no atoms")
-    return sum(b_factors) / len(b_factors)
+    def as_pepglad_entry(self):
+        return [self.chain, [self.number, self.icode], self.score]
 
 
-def _residue_id(residue: Residue) -> ResidueId:
-    chain = residue.get_parent()
-    _, number, insertion_code = residue.id
-    return chain.id, number, insertion_code
+@dataclass(frozen=True)
+class GuidanceContext:
+    seed: ScoredResidue
+    residues: tuple[ScoredResidue, ...]
+
+    def as_pepglad_pocket(self):
+        return [residue.as_pepglad_entry() for residue in self.residues]
 
 
-def _relative_sasa(residue: Residue, residue_areas: dict) -> float:
-    """Return the FreeSASA relative accessibility for a residue."""
+@dataclass(frozen=True)
+class GuidanceSelection:
+    max_rank: int | str = 3
+    surface_rsa_threshold: float = 0.2
+    seed_separation: float = 15.0
+    context_radius: float = 10.0
+    max_context_size: int = 48
 
-    chain, number, insertion_code = _residue_id(residue)
-    residue_number = f"{number}{insertion_code.strip()}"
+    def __post_init__(self):
+        if self.max_rank != 'all' and (type(self.max_rank) is not int or self.max_rank < 1):
+            raise ValueError('max_rank must be a positive integer or "all"')
+        if (not math.isfinite(self.surface_rsa_threshold)
+                or not 0 <= self.surface_rsa_threshold <= 1):
+            raise ValueError('surface_rsa_threshold must be between 0 and 1')
+        if (not math.isfinite(self.seed_separation) or self.seed_separation <= 0
+                or not math.isfinite(self.context_radius) or self.context_radius <= 0
+                or type(self.max_context_size) is not int or self.max_context_size < 3):
+            raise ValueError('Invalid spatial context parameters')
+
+
+def _relative_sasa(residue, areas):
+    chain = residue.get_parent().id
+    _, number, icode = residue.id
     try:
-        relative_sasa = residue_areas[chain][residue_number].relativeTotal
+        value = areas[chain][f'{number}{icode.strip()}'].relativeTotal
     except KeyError:
         return 0.0
-    return relative_sasa if math.isfinite(relative_sasa) else 0.0
+    return value if math.isfinite(value) else 0.0
 
 
-def find_high_bfactor_spatial_patches(
-    pdb_file: Union[str, Path],
-    bfactor_threshold: float = 0.5,
-    distance_cutoff: float = 5.0,
-    min_patch_size: int = 3,
-    surface_rsa_threshold: float = 0.2,
-) -> List[SpatialPatch]:
-    """Find connected surface patches of residues with high GAPS scores.
+def _read_score_records(scores_json):
+    payload = json.loads(Path(scores_json).read_text(encoding='utf-8'))
+    if (not isinstance(payload, dict) or type(payload.get('schema_version')) is not int
+            or payload['schema_version'] != 1
+            or not isinstance(payload.get('residues'), list)):
+        raise ValueError(f'Invalid GAPS score sidecar: {scores_json}')
+    return payload['residues']
 
-    A residue is retained when its mean atomic B-factor is greater than or
-    equal to ``bfactor_threshold`` and its relative solvent-accessible surface
-    area (RSA) is at least ``surface_rsa_threshold``. RSA is calculated over
-    the complete first model so that atoms in neighboring chains can occlude
-    one another. A threshold of 0.2 therefore requires at least 20 percent of
-    the residue's reference surface area to be exposed. Two retained surface
-    residues are connected when any pair of their non-hydrogen atoms is within
-    ``distance_cutoff`` Angstrom. Connections may cross chain boundaries.
 
-    Patches are ranked by mean B-factor, then by patch size. Hetero residues
-    and water are ignored.
-    """
-
-    if not 0.0 <= bfactor_threshold <= 1.0:
-        raise ValueError("bfactor_threshold must be between 0 and 1")
-    if distance_cutoff <= 0.0:
-        raise ValueError("distance_cutoff must be greater than 0")
-    if min_patch_size < 1:
-        raise ValueError("min_patch_size must be at least 1")
-    if not 0.0 <= surface_rsa_threshold <= 1.0:
-        raise ValueError("surface_rsa_threshold must be between 0 and 1")
-
-    pdb_path = Path(pdb_file)
-    if not pdb_path.is_file():
-        raise FileNotFoundError(pdb_path)
-
-    structure = PDBParser(QUIET=True).get_structure(pdb_path.stem, str(pdb_path))
+def _scored_residue(record, model, areas, seen):
+    """Verify one sidecar record against the unmodified input structure."""
     try:
-        model = next(structure.get_models())
-    except StopIteration as exc:
-        raise ValueError(f"No model found in {pdb_path}") from exc
-
-    residue_scores = {
-        residue: _mean_bfactor(residue)
-        for residue in model.get_residues()
-        if residue.id[0] == " "
-    }
-    score_candidates = {
-        residue for residue, score in residue_scores.items()
-        if score >= bfactor_threshold
-    }
-    if not score_candidates:
-        return []
-
-    sasa_result = freesasa.calcBioPDB(structure)[0]
-    residue_areas = sasa_result.residueAreas()
-    selected = {
-        residue for residue in score_candidates
-        if _relative_sasa(residue, residue_areas) >= surface_rsa_threshold
-    }
-    if not selected:
-        return []
-
-    adjacency = {residue: set() for residue in selected}
-    heavy_atoms = [
-        atom
-        for residue in selected
-        for atom in residue.get_atoms()
-        if atom.element != "H"
-    ]
-    for left, right in NeighborSearch(heavy_atoms).search_all(
-            distance_cutoff, level="R"):
-        if left is right:
-            continue
-        adjacency[left].add(right)
-        adjacency[right].add(left)
-
-    patches = []
-    unseen = set(selected)
-    while unseen:
-        seed = unseen.pop()
-        component = {seed}
-        stack = [seed]
-        while stack:
-            neighbors = adjacency[stack.pop()] & unseen
-            unseen.difference_update(neighbors)
-            component.update(neighbors)
-            stack.extend(neighbors)
-
-        if len(component) < min_patch_size:
-            continue
-
-        ordered_residues = tuple(sorted(_residue_id(residue)
-                                        for residue in component))
-        scores = [residue_scores[residue] for residue in component]
-        patches.append(SpatialPatch(
-            residues=ordered_residues,
-            mean_bfactor=sum(scores) / len(scores),
-            max_bfactor=max(scores),
-        ))
-
-    patches.sort(
-        key=lambda patch: (patch.mean_bfactor, len(patch.residues)),
-        reverse=True,
+        chain = record['chain']
+        number = record['number']
+        icode = record['icode']
+        score = record['score']
+        resname = record['resname']
+        ca = record['ca']
+    except (KeyError, TypeError) as exc:
+        raise ValueError(f'Malformed GAPS score record: {record}') from exc
+    if (not isinstance(chain, str) or len(chain) != 1
+            or type(number) is not int or not isinstance(icode, str)
+            or len(icode) != 1 or not isinstance(resname, str)
+            or type(score) not in (float, int)
+            or not math.isfinite(score) or not 0 <= score <= 1):
+        raise ValueError(f'Invalid GAPS residue identity or score: {record}')
+    key = (chain, number, icode)
+    if key in seen:
+        raise ValueError(f'Duplicate GAPS residue: {key}')
+    seen.add(key)
+    try:
+        residue = model[chain][(' ', number, icode)]
+    except KeyError as exc:
+        raise ValueError(f'GAPS residue missing from input PDB: {key}') from exc
+    if residue.resname != resname:
+        raise ValueError(f'GAPS residue type differs from input PDB: {key}')
+    if ca is None:
+        return None
+    if 'CA' not in residue or not isinstance(ca, list) or len(ca) != 3:
+        raise ValueError(f'Invalid C-alpha mapping for GAPS residue: {key}')
+    if not all(type(x) in (int, float) and math.isfinite(x) for x in ca):
+        raise ValueError(f'Invalid C-alpha coordinates for GAPS residue: {key}')
+    if np.linalg.norm(residue['CA'].coord - np.asarray(ca)) > 0.05:
+        raise ValueError(f'GAPS C-alpha differs from input PDB: {key}')
+    return ScoredResidue(
+        chain, number, icode, float(score), tuple(map(float, ca)),
+        _relative_sasa(residue, areas),
     )
-    return patches
 
 
-def select_contiguous_high_bfactor_residues(
-    pdb_file: Union[str, Path],
-    bfactor_threshold: float = 0.5,
-    distance_cutoff: float = 5.0,
-    min_patch_size: int = 3,
-    surface_rsa_threshold: float = 0.2,
-) -> List[list]:
-    """Return the best high-GAPS-score surface patch in PepGLAD format."""
+def load_scored_residues(input_pdb, scores_json):
+    """Check full-precision GAPS records against the original receptor PDB."""
+    input_pdb = Path(input_pdb)
+    records = _read_score_records(scores_json)
 
-    patches = find_high_bfactor_spatial_patches(
-        pdb_file=pdb_file,
-        bfactor_threshold=bfactor_threshold,
-        distance_cutoff=distance_cutoff,
-        min_patch_size=min_patch_size,
-        surface_rsa_threshold=surface_rsa_threshold,
+    structure = PDBParser(QUIET=True).get_structure(input_pdb.stem, str(input_pdb))
+    model = next(structure.get_models(), None)
+    if model is None:
+        raise ValueError(f'No model found in {input_pdb}')
+    areas = freesasa.calcBioPDB(structure)[0].residueAreas()
+
+    scored = []
+    seen = set()
+    for record in records:
+        residue = _scored_residue(record, model, areas, seen)
+        if residue is not None:
+            scored.append(residue)
+    if not scored:
+        raise ValueError(f'No C-alpha-bearing GAPS residues in {scores_json}')
+    return scored
+
+
+def select_contexts(residues, selection):
+    """Choose scored local contexts without reading files or running GAPS."""
+    candidates = sorted(
+        (r for r in residues if r.relative_sasa >= selection.surface_rsa_threshold),
+        key=lambda r: (-r.score, r.key),
     )
-    return patches[0].as_pepglad_pocket() if patches else []
+    contexts = []
+    for seed in candidates:
+        if any(np.linalg.norm(np.subtract(seed.ca, ctx.seed.ca)) < selection.seed_separation
+               for ctx in contexts):
+            continue
+        nearby = sorted(
+            (r for r in residues
+             if np.linalg.norm(np.subtract(seed.ca, r.ca)) <= selection.context_radius),
+            key=lambda r: (np.linalg.norm(np.subtract(seed.ca, r.ca)),
+                           -r.score, r.key),
+        )[:selection.max_context_size]
+        if len(nearby) < 3 or not any(r.score > 0 for r in nearby):
+            continue
+        contexts.append(GuidanceContext(seed, tuple(sorted(nearby, key=lambda r: r.key))))
+        if selection.max_rank != 'all' and len(contexts) >= selection.max_rank:
+            break
+    if not contexts:
+        raise ValueError('No usable GAPS-guided receptor contexts found')
+    return contexts
+
+
+def select_guidance_contexts(
+    input_pdb, scores_json, max_rank=3, surface_rsa_threshold=0.2,
+    seed_separation=15.0, context_radius=10.0, max_context_size=48,
+):
+    """Load GAPS scores, then choose separated surface contexts."""
+    selection = GuidanceSelection(
+        max_rank, surface_rsa_threshold, seed_separation,
+        context_radius, max_context_size)
+    return select_contexts(load_scored_residues(input_pdb, scores_json), selection)
 
 
 def run_gaps(pdb_filepath, out_dir='.', pytorch_device='cuda'):
     """Run GAPS prediction in its dedicated Conda environment."""
-
     subprocess.run([
         'conda', 'run', '--no-capture-output', '-n', 'gaps', 'python',
         str(Path(__file__).with_name('gaps_predict.py')),

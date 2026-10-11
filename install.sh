@@ -52,22 +52,21 @@ install_repository() {
     printf 'Using existing %s checkout.\n' "${name}"
 }
 
-apply_gaps_patch() {
-    local gaps_directory="${SCRIPT_DIR}/GAPS"
-    local patch_file="${SCRIPT_DIR}/patches/GAPS.patch"
+apply_dependency_patch() {
+    local name="$1"
+    local patch_file="$2"
+    local directory="${SCRIPT_DIR}/${name}"
 
-    [[ -f "${patch_file}" ]] || die "GAPS patch not found: ${patch_file}"
-    touch "${gaps_directory}/__init__.py"
-
-    if git -C "${gaps_directory}" apply --reverse --check \
+    [[ -f "${patch_file}" ]] || die "${name} patch not found: ${patch_file}"
+    if git -C "${directory}" apply --reverse --check \
         --ignore-space-change "${patch_file}" >/dev/null 2>&1; then
-        printf 'GAPS compatibility patch is already applied.\n'
-    elif git -C "${gaps_directory}" apply --check \
+        printf '%s patch is already applied: %s\n' "${name}" "${patch_file}"
+    elif git -C "${directory}" apply --check \
         --ignore-space-change "${patch_file}" >/dev/null 2>&1; then
-        git -C "${gaps_directory}" apply --ignore-space-change "${patch_file}"
-        printf 'Applied the GAPS compatibility patch.\n'
+        git -C "${directory}" apply --ignore-space-change "${patch_file}"
+        printf 'Applied %s patch: %s\n' "${name}" "${patch_file}"
     else
-        die "The GAPS compatibility patch cannot be applied cleanly"
+        die "${name} patch cannot be applied cleanly: ${patch_file}"
     fi
 }
 
@@ -200,8 +199,10 @@ main() {
     fi
 
     install_repository GAPS "${GAPS_REPOSITORY}" "${GAPS_REVISION}"
-    apply_gaps_patch
+    touch "${SCRIPT_DIR}/GAPS/__init__.py"
+    apply_dependency_patch GAPS "${SCRIPT_DIR}/patches/GAPS.patch"
     install_repository PepGLAD "${PEPGLAD_REPOSITORY}" "${PEPGLAD_REVISION}"
+    apply_dependency_patch PepGLAD "${SCRIPT_DIR}/patches/PepGLAD.patch"
     install_pepglad_checkpoints
     install_environments
 

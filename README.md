@@ -14,7 +14,7 @@ cd allopep
 bash install.sh
 ```
 
-The installer fetches pinned GAPS and PepGLAD code, applies the GAPS patch,
+The installer fetches pinned GAPS and PepGLAD code, applies their tracked patches,
 downloads PepGLAD checkpoints, and creates or updates the `gaps`, `PepGLAD`,
 and `allopep` environments. It also installs Ray's metrics dependencies and
 builds the rotarama cache. Rerun `bash install.sh` to complete an interrupted
@@ -40,6 +40,13 @@ python allopep.py input/structure.pdb --rank-existing
 
 `--validate-existing` checks structures without scoring them.
 `--rank-existing` validates and scores them without rerunning GAPS or PepGLAD.
+For new designs, GAPS saves full-precision residue scores in a JSON sidecar.
+AlloPep chooses local receptor contexts around separated exposed high-scoring
+residues and passes each residue's score to PepGLAD for spatial guidance.
+The three highest-scoring sites are used by default; `--max_rank all` designs
+against every separated site, or pass a positive number. Set
+`--score-guidance-strength 0` for a matched run without the score attraction
+term. The receptor context is still chosen from GAPS scores.
 For Vina scoring, `--vina-box-padding` sets the box padding in ångströms and
 `--vina-hydrogen-policy {keep,rebuild}` selects how Meeko handles hydrogens.
 
@@ -50,6 +57,8 @@ For `input/structure.pdb`, results go in `output/structure_output/`:
 | File | Contents |
 | --- | --- |
 | `structure.pdb` | Saved input used when checking existing outputs. A new full run rejects a different PDB with the same filename. |
+| `structure_GAPS_scores.json` | Full-precision GAPS scores keyed by the input PDB's chain, residue number, and insertion code. |
+| `structure_allosteric_sites/` | Local receptor contexts with a score for every included residue. |
 | `structure_PepGLAD_outputs/` | Generated complex PDBs and PepGLAD summaries. |
 | `structure_pepglad_aligned.pml` | PyMOL script showing generated peptides aligned to the input receptor. |
 | `structure_vina_score/structure_pepglad_validation.csv` | Status, counts, and rejection reasons for every PepGLAD structure. |
@@ -69,6 +78,7 @@ from heavy-atom geometry checks. If no structures pass, AlloPep stops before
 Vina scoring. Inspect the validation CSV and JSONL for the reasons.
 
 Vina scores the generated pose without docking and ranks lower scores first.
-These scores and geometry checks do not establish experimental affinity or
-dynamic stability. See [the bundled scorer documentation](vina_scoring/README.md)
+GAPS-guided sampling is experimental. These scores and geometry checks do not
+establish experimental affinity or dynamic stability. See
+[the bundled scorer documentation](vina_scoring/README.md)
 for scoring details.

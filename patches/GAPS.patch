@@ -9,3 +9,17 @@ index 3a83404..a30c929 100644
  
  class Model(pt.nn.Module):
      def __init__(self, config):
+diff --git a/src/structure.py b/src/structure.py
+index e0a833f..862c647 100644
+--- a/src/structure.py
++++ b/src/structure.py
+@@ -34,6 +34,9 @@ def cle_structure(structure, rm_wat=True):
+         mask = ((~m_h) & (~m_d) & (~m_hwat))
+         structure["resid"][m_wat] = -999
+     structure = {key:structure[key][mask] for key in structure}
++    # Retain source-PDB identities while resid is renumbered for the model.
++    structure['original_resid'] = structure['resid'].copy()
++    structure['original_icode'] = structure['icode'].copy()
+     chains = structure["chain_name"]
+     ids_chains = np.where(np.array(chains).reshape(-1,1) == np.unique(chains).reshape(1,-1))[1]
+     delta_chains = np.abs(np.sign(np.concatenate([[0], np.diff(ids_chains)])))

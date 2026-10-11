@@ -13,9 +13,20 @@ import subprocess
 import sys
 from pathlib import Path
 
-import pandas as pd
-
+from pepglad_outputs import load_design_outputs
 import run_gaps
+
+
+def _max_rank(value):
+    if value == 'all':
+        return value
+    try:
+        rank = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError('expected a positive integer or "all"') from exc
+    if rank < 1:
+        raise argparse.ArgumentTypeError('expected a positive integer or "all"')
+    return rank
 
 
 def parse_args(argv=None):
@@ -24,14 +35,16 @@ def parse_args(argv=None):
         description='Pipeline for allosteric peptide design',
     )
     parser.add_argument('pdb_file')
-    parser.add_argument('--max_rank', default=None, type=int,
-                        help='Maximum ranked GAPS patch to use for peptide design')
+    parser.add_argument('--max_rank', default=3, type=_max_rank,
+                        help='Number of separated GAPS sites to design (default: 3; "all" for every site)')
     parser.add_argument('--length_min', default=5, type=int,
                         help='Minimum length of the predicted peptide')
     parser.add_argument('--length_max', default=10, type=int,
                         help='Maximum length of the predicted peptide')
     parser.add_argument('--num_samples', default=10, type=int,
-                        help='Number of predicted peptides per patch')
+                        help='Number of predicted peptides per site')
+    parser.add_argument('--score-guidance-strength', default=1.0, type=float,
+                        help='Strength of continuous GAPS score guidance (default: 1.0)')
     parser.add_argument('--peptide-chain', default=None,
                         help='Known peptide chain ID; uses PepGLAD summary if omitted')
     existing = parser.add_mutually_exclusive_group()
@@ -71,7 +84,7 @@ def prepare_input_pdb(input_pdb, out_dir, validate_existing=False):
     return str(source)
 
 
-def run_pepglad(args, pdb_file, out_dir, prefix, patches):
+def run_pepglad(args, pdb_file, out_dir, prefix, contexts):
     sites_dir = out_dir / f'{prefix}_allosteric_sites'
     sites_dir.mkdir(parents=True, exist_ok=True)
 
@@ -87,15 +100,11 @@ def run_pepglad(args, pdb_file, out_dir, prefix, patches):
         env.get('PYTHONWARNINGS'), pdbfixer_warning,
     )))
 
-    max_rank = len(patches)
-    if args.max_rank is not None and 0 < args.max_rank <= max_rank:
-        max_rank = args.max_rank
-
     generated = []
-    for rank, patch in enumerate(patches[:max_rank], start=1):
+    for rank, context in enumerate(contexts, start=1):
         pocket_file = sites_dir / f'{prefix}_allosteric_site_{rank}.json'
         with pocket_file.open('w', encoding='utf-8') as handle:
-            json.dump(patch.as_pepglad_pocket(), handle)
+            json.dump(context.as_pepglad_pocket(), handle)
 
         codesign_dir = (
             out_dir / f'{prefix}_PepGLAD_outputs'
@@ -110,6 +119,7 @@ def run_pepglad(args, pdb_file, out_dir, prefix, patches):
             '--length_min', str(args.length_min),
             '--length_max', str(args.length_max),
             '--n_samples', str(args.num_samples),
+            '--score-guidance-strength', str(args.score_guidance_strength),
         ], cwd='PepGLAD', env=env, check=True)
 
         for sample_index in range(args.num_samples):
@@ -119,11 +129,11 @@ def run_pepglad(args, pdb_file, out_dir, prefix, patches):
                     f'PepGLAD did not produce expected output: {output_pdb}'
                 )
             generated.append((output_pdb, rank, sample_index))
-    return generated
+    return load_design_outputs(generated)
 
 
 def run_openstructure_validation(generated, score_dir, prefix, peptide_chain, input_pdb):
-    """Check all generated complexes and return paths that pass validation."""
+    """Check generated complexes and return the designs that pass."""
     ost = shutil.which('ost')
     if ost is None:
         raise FileNotFoundError(
@@ -132,24 +142,14 @@ def run_openstructure_validation(generated, score_dir, prefix, peptide_chain, in
     manifest = score_dir / f'{prefix}_pepglad_validation_manifest.json'
     csv_file = score_dir / f'{prefix}_pepglad_validation.csv'
     jsonl_file = score_dir / f'{prefix}_pepglad_validation.jsonl'
-    summaries = {}
     entries = []
-    for path, rank, sample in generated:
-        summary_path = path.parent / 'summary.jsonl'
-        if summary_path not in summaries:
-            records = [json.loads(line) for line in summary_path.read_text(
-                encoding='utf-8').splitlines() if line.strip()]
-            summaries[summary_path] = {record['id']: record for record in records}
-            if len(summaries[summary_path]) != len(records):
-                raise ValueError(f'Duplicate PepGLAD IDs in {summary_path}')
-        if path.stem not in summaries[summary_path]:
-            raise ValueError(f'{path.stem} is missing from {summary_path}')
-        record = summaries[summary_path][path.stem]
+    for design in generated:
         entries.append({
-            'path': str(path.resolve()), 'site': rank, 'sample': sample,
+            'path': design.resolved_path, 'site': design.site,
+            'sample': design.sample,
             'input_pdb': str(Path(input_pdb).resolve()),
-            'pep_seq': record['pep_seq'], 'pep_chain': record['pep_chain'],
-            'rec_chains': record['rec_chains'],
+            'pep_seq': design.sequence, 'pep_chain': design.peptide_chain,
+            'rec_chains': list(design.receptor_chains),
         })
     manifest.write_text(json.dumps(entries, indent=2) + '\n', encoding='utf-8')
     command = [ost, str(Path(__file__).with_name('pepglad_validation.py')),
@@ -160,16 +160,26 @@ def run_openstructure_validation(generated, score_dir, prefix, peptide_chain, in
     subprocess.run(command, check=True)
     with csv_file.open(newline='', encoding='utf-8') as handle:
         rows = list(csv.DictReader(handle))
-    if len(rows) != len(generated):
-        raise RuntimeError('OpenStructure result count differs from PepGLAD output count')
+    by_path = {design.resolved_path: design for design in generated}
+    if (len(rows) != len(generated) or len(by_path) != len(generated)
+            or {row['path'] for row in rows} != set(by_path)):
+        raise RuntimeError('OpenStructure result paths differ from PepGLAD outputs')
     errors = [row for row in rows if row['status'] == 'error']
     if errors:
         raise RuntimeError(f'{len(errors)} OpenStructure checks failed; see {csv_file}')
-    return {row['path']: row['peptide_chain'] for row in rows
-            if row['status'] == 'valid'}
+    if any(row['status'] not in ('valid', 'invalid') for row in rows):
+        raise RuntimeError(f'Unexpected OpenStructure status; see {csv_file}')
+    valid = []
+    for row in rows:
+        design = by_path[row['path']]
+        if row['peptide_chain'] != design.peptide_chain:
+            raise RuntimeError(f'OpenStructure peptide chain differs for {row["path"]}')
+        if row['status'] == 'valid':
+            valid.append(design)
+    return valid
 
 
-def rank_pepglad_outputs(generated, valid_chains, score_dir, prefix,
+def rank_pepglad_outputs(valid_designs, score_dir, prefix,
                          box_padding=5.0, hydrogen_policy='keep'):
     """Run the bundled rigid-pose scorer and rank successful total scores."""
     score_file = score_dir / f'{prefix}_vina_ranked.csv'
@@ -180,13 +190,13 @@ def rank_pepglad_outputs(generated, valid_chains, score_dir, prefix,
     temporary_results = score_dir / f'{prefix}_vina_results.csv.tmp'
     temporary_results.unlink(missing_ok=True)
     samples = {}
-    for output_pdb, site, sample in generated:
-        path = str(output_pdb.resolve())
-        if path not in valid_chains:
-            continue
-        samples[f'site_{site}_sample_{sample}'] = {
-            'site': site, 'sample': sample, 'path': path,
-            'peptide_chain': valid_chains[path],
+    for design in valid_designs:
+        if design.job_id in samples:
+            raise ValueError(f'Duplicate PepGLAD job ID: {design.job_id}')
+        samples[design.job_id] = {
+            'site': design.site, 'sample': design.sample,
+            'path': design.resolved_path,
+            'peptide_chain': design.peptide_chain,
         }
     if not samples:
         raise ValueError('No validated PepGLAD structures to score')
@@ -252,45 +262,24 @@ def rank_pepglad_outputs(generated, valid_chains, score_dir, prefix,
 
 def find_existing_pepglad_outputs(out_dir, prefix):
     generated = []
+    summary_paths = []
     pattern = re.compile(rf'^{re.escape(prefix)}_allosteric_site_(\d+)_codesign$')
     for site_dir in (out_dir / f'{prefix}_PepGLAD_outputs').glob('*_codesign'):
         site = pattern.fullmatch(site_dir.name)
         if not site:
             continue
-        paths = {pdb.stem: pdb for pdb in site_dir.glob('*.pdb')}
-        summary = site_dir / 'summary.jsonl'
-        if summary.is_file():
-            expected = {json.loads(line)['id'] for line in summary.read_text(
-                encoding='utf-8').splitlines() if line.strip()}
-            if expected != set(paths):
-                raise ValueError(f'PepGLAD PDBs do not match {summary}: '
-                                 f'missing={sorted(expected - set(paths))}, '
-                                 f'extra={sorted(set(paths) - expected)}')
-        for stem, pdb in paths.items():
+        summary_paths.append(site_dir / 'summary.jsonl')
+        for pdb in site_dir.glob('*.pdb'):
+            stem = pdb.stem
             sample = re.fullmatch(rf'{re.escape(prefix)}_(\d+)', stem)
             if sample:
                 generated.append((pdb, int(site.group(1)), int(sample.group(1))))
-    return sorted(generated, key=lambda item: (item[1], item[2]))
+    generated.sort(key=lambda item: (item[1], item[2]))
+    return load_design_outputs(generated, exact=True, summary_paths=summary_paths)
 
 
 def write_pymol_script(generated, input_pdb, out_dir, prefix):
     """Load every PepGLAD complex with its receptor aligned to the input PDB."""
-    summaries = {}
-    models = []
-    for path, site, sample in generated:
-        summary_path = path.parent / 'summary.jsonl'
-        if summary_path not in summaries:
-            records = [json.loads(line) for line in summary_path.read_text(
-                encoding='utf-8').splitlines() if line.strip()]
-            summaries[summary_path] = {record['id']: record for record in records}
-        record = summaries[summary_path][path.stem]
-        chains = record['rec_chains']
-        peptide_chain = record['pep_chain']
-        if (not chains or any(not re.fullmatch(r'[A-Za-z0-9]', chain)
-                              for chain in [*chains, peptide_chain])):
-            raise ValueError(f'Unsupported PepGLAD chain ID in {summary_path}')
-        models.append((str(path.resolve()), site, sample, chains, peptide_chain))
-
     object_prefix = 'allopep_' + re.sub(r'[^A-Za-z0-9_]', '_', prefix)
     reference = f'{object_prefix}_input'
     script_path = out_dir / f'{prefix}_pepglad_aligned.pml'
@@ -299,16 +288,16 @@ def write_pymol_script(generated, input_pdb, out_dir, prefix):
         f'load {json.dumps(str(Path(input_pdb).resolve()))}, {reference}',
     ]
     sites = {}
-    for path, site, sample, chains, peptide_chain in models:
-        name = f'{object_prefix}_site_{site}_sample_{sample}'
-        receptor = ' or '.join(f'chain {chain}' for chain in chains)
+    for design in generated:
+        name = f'{object_prefix}_site_{design.site}_sample_{design.sample}'
+        receptor = ' or '.join(f'chain {chain}' for chain in design.receptor_chains)
         mobile = f'({name} and name CA and ({receptor}))'
         target = f'({reference} and name CA and ({receptor}))'
         lines.extend([
-            f'load {json.dumps(path)}, {name}',
+            f'load {json.dumps(design.resolved_path)}, {name}',
             f'align {mobile}, {target}, cycles=0',
         ])
-        sites.setdefault(site, []).append((name, peptide_chain))
+        sites.setdefault(design.site, []).append((name, design.peptide_chain))
     lines.extend([
         f'hide everything, {object_prefix}_*',
         f'show cartoon, {reference}',
@@ -336,8 +325,16 @@ def write_pymol_script(generated, input_pdb, out_dir, prefix):
 
 def main(argv=None):
     args = parse_args(argv)
+    if args.length_min < 1 or args.length_max < args.length_min:
+        raise ValueError('--length_min must be positive and no greater than --length_max')
+    if args.num_samples < 1:
+        raise ValueError('--num_samples must be positive')
     if not math.isfinite(args.vina_box_padding) or args.vina_box_padding <= 0:
         raise ValueError('--vina-box-padding must be finite and positive')
+    if not math.isfinite(args.score_guidance_strength) or args.score_guidance_strength < 0:
+        raise ValueError('--score-guidance-strength must be finite and nonnegative')
+    if args.peptide_chain is not None and not re.fullmatch(r'[A-Za-z0-9]', args.peptide_chain):
+        raise ValueError('--peptide-chain must be one alphanumeric chain ID')
     prefix = Path(args.pdb_file).stem
     out_dir = Path('output') / f'{prefix}_output'
     reuse_existing = args.validate_existing or args.rank_existing
@@ -350,31 +347,21 @@ def main(argv=None):
         score_dir.mkdir(parents=True, exist_ok=True)
     else:
         run_gaps.run_gaps(pdb_file, out_dir=str(out_dir))
-        patches = run_gaps.find_high_bfactor_spatial_patches(
-            out_dir / f'{prefix}_GAPS_output.pdb'
+        contexts = run_gaps.select_guidance_contexts(
+            pdb_file, out_dir / f'{prefix}_GAPS_scores.json',
+            max_rank=args.max_rank,
         )
-
-        pocket_scores = pd.DataFrame([
-            {
-                'pocket': patch.as_pepglad_pocket(),
-                'mean_gaps_score': patch.mean_bfactor,
-                'max_gaps_score': patch.max_bfactor,
-            }
-            for patch in patches
-        ])
-        print(pocket_scores)
-        pocket_scores.to_csv(out_dir / 'pocket_scores.csv', index=False)
-
-        generated = run_pepglad(args, pdb_file, out_dir, prefix, patches)
+        print(f'Designing against {len(contexts)} GAPS-guided sites')
+        generated = run_pepglad(args, pdb_file, out_dir, prefix, contexts)
         score_dir.mkdir(parents=True, exist_ok=True)
 
     pymol_script = write_pymol_script(generated, pdb_file, out_dir, prefix)
     print(f'PyMOL session script: {pymol_script}')
-    valid_chains = run_openstructure_validation(
+    valid_designs = run_openstructure_validation(
         generated, score_dir, prefix, args.peptide_chain, pdb_file)
     if args.validate_existing:
         return
-    if not valid_chains:
+    if not valid_designs:
         (score_dir / f'{prefix}_vina_ranked.csv').unlink(missing_ok=True)
         (score_dir / f'{prefix}_vina_results.csv').unlink(missing_ok=True)
         (score_dir / f'{prefix}_vina_manifest.csv').unlink(missing_ok=True)
@@ -383,10 +370,10 @@ def main(argv=None):
         return
 
     ranked = rank_pepglad_outputs(
-        generated, valid_chains, score_dir, prefix,
+        valid_designs, score_dir, prefix,
         box_padding=args.vina_box_padding,
         hydrogen_policy=args.vina_hydrogen_policy)
-    failures = len(valid_chains) - len(ranked)
+    failures = len(valid_designs) - len(ranked)
     print(f'Ranked {len(ranked)} PepGLAD structures by Vina score '
           f'({failures} scoring failures); '
           f'see {score_dir / (prefix + "_vina_ranked.csv")} and '

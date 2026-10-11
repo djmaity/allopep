@@ -81,6 +81,7 @@ from heavy-atom geometry checks. If no structures pass, AlloPep stops before
 Vina scoring. Inspect the validation CSV and JSONL for the reasons.
 
 Vina scores the generated pose without docking and ranks lower scores first.
+AlloPep reads the scorer's result fields and verifies its protocol ID.
 GAPS-guided sampling is experimental. These scores and geometry checks do not
 establish experimental affinity or dynamic stability. See
 `~/repos/peptide-vina-scoring/README.md` for scoring details.

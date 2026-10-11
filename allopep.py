@@ -222,6 +222,9 @@ def rank_pepglad_outputs(valid_designs, score_dir, prefix,
         results = list(csv.DictReader(handle))
     if len(results) != len(samples) or {row['id'] for row in results} != set(samples):
         raise RuntimeError(f'Vina result count or IDs differ from {manifest_file}')
+    if any(row.get('protocol_id') != 'rigid_meeko_vina_residue_sum_v1'
+           for row in results):
+        raise RuntimeError(f'Unsupported Vina scoring protocol: {result_file}')
     rows = []
     for result in results:
         if result['status'] == 'error':

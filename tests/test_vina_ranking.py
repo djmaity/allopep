@@ -141,17 +141,21 @@ class VinaRankingTests(unittest.TestCase):
                 output = Path(command[command.index('--output') + 1])
                 with output.open('w', newline='') as handle:
                     writer = csv.DictWriter(handle, fieldnames=(
-                        'id', 'status', 'score_total', 'score_ligand_inter',
+                        'protocol_id', 'id', 'status',
+                        'score_total', 'score_ligand_inter',
                         'vina_version', 'meeko_version', 'error'))
                     writer.writeheader()
                     writer.writerows([
-                        {'id': 'site_1_sample_0', 'status': 'ok',
+                        {'protocol_id': 'rigid_meeko_vina_residue_sum_v1',
+                         'id': 'site_1_sample_0', 'status': 'ok',
                          'score_total': -4.0, 'score_ligand_inter': -4.2,
                          'vina_version': '1.2.7', 'meeko_version': '0.8.0'},
-                        {'id': 'site_2_sample_0', 'status': 'ok',
+                        {'protocol_id': 'rigid_meeko_vina_residue_sum_v1',
+                         'id': 'site_2_sample_0', 'status': 'ok',
                          'score_total': -8.0, 'score_ligand_inter': -8.1,
                          'vina_version': '1.2.7', 'meeko_version': '0.8.0'},
-                        {'id': 'site_2_sample_1', 'status': 'error',
+                        {'protocol_id': 'rigid_meeko_vina_residue_sum_v1',
+                         'id': 'site_2_sample_1', 'status': 'error',
                          'error': 'Meeko preparation failed'},
                     ])
 
@@ -183,7 +187,8 @@ class VinaRankingTests(unittest.TestCase):
             def write_failure(command, check):
                 output = Path(command[command.index('--output') + 1])
                 output.write_text(
-                    'id,status,error\n'
+                    'protocol_id,id,status,error\n'
+                    'rigid_meeko_vina_residue_sum_v1,'
                     'site_1_sample_0,error,Meeko preparation failed\n',
                     encoding='utf-8')
 
@@ -193,6 +198,21 @@ class VinaRankingTests(unittest.TestCase):
                     [design(pdb)], root, 'target')
             self.assertTrue((root / 'target_vina_results.csv').is_file())
             self.assertFalse((root / 'target_vina_ranked.csv').exists())
+
+    def test_vina_results_without_protocol_are_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+
+            def write_legacy(command, check):
+                output = Path(command[command.index('--output') + 1])
+                output.write_text(
+                    'id,status,score_total\nsite_1_sample_0,ok,-5.64\n',
+                    encoding='utf-8')
+
+            with patch('allopep.subprocess.run', side_effect=write_legacy), \
+                 self.assertRaisesRegex(RuntimeError, 'Unsupported Vina scoring protocol'):
+                rank_pepglad_outputs([design(root / 'target_0.pdb')], root,
+                                     'target')
 
     def test_validation_manifest_uses_pepglad_summary_and_input(self):
         with tempfile.TemporaryDirectory() as directory:

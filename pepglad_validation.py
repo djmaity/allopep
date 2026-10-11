@@ -209,8 +209,8 @@ def _receptor_displacement(entity, input_pdb, receptor_names):
     return len(deviations), float(np.sqrt(np.mean(deviations ** 2))), float(deviations.max())
 
 
-def validate_structure(entry, peptide_chain=None):
-    """Return a per-complex result with counts and violation details."""
+def _collect_metrics(entry, peptide_chain=None):
+    """Measure one complex without applying the validation policy."""
     path = Path(entry['path']).resolve()
     input_pdb = Path(entry['input_pdb']).resolve()
     result = {'path': str(path), 'sha256': hashlib.sha256(path.read_bytes()).hexdigest(),
@@ -300,17 +300,56 @@ def validate_structure(entry, peptide_chain=None):
         (bond['planarity_deviation_degrees'] for bond in details['omega_bonds']),
         default=None)
 
+    return result, details
+
+
+def validation_reasons(metrics):
+    """Apply the existing physical-validity gate to measured metrics."""
     reasons = [key for key in ('peptide_clashes', 'interface_clashes',
                'peptide_bad_bonds', 'peptide_bad_angles', 'inverted_ca',
                'flat_ca', 'missing_backbone_atoms', 'backbone_breaks',
                'sequence_mismatches', 'missing_heavy_atoms', 'rama_outliers',
                'rotamer_outliers', 'omega_unassessable', 'twisted_peptide_bonds',
-               'nonpro_cis_peptide_bonds') if result[key]]
-    if result['contact_residues_5a'] == 0:
+               'nonpro_cis_peptide_bonds') if metrics[key]]
+    if metrics['contact_residues_5a'] == 0:
         reasons.append('no_receptor_contact_5a')
+    return reasons
+
+
+def validate_structure(entry, peptide_chain=None):
+    """Return a per-complex result with counts and violation details."""
+    result, details = _collect_metrics(entry, peptide_chain)
+    reasons = validation_reasons(result)
     result['status'] = 'invalid' if reasons else 'valid'
     result['reasons'] = ';'.join(reasons)
     return result, details
+
+
+def validate_manifest(entries, peptide_chain=None):
+    """Keep per-complex failures in the report instead of aborting the batch."""
+    for entry in entries:
+        try:
+            result, details = validate_structure(entry, peptide_chain)
+        except Exception as exc:
+            result = {'path': entry['path'], 'site': entry['site'],
+                      'sample': entry['sample'], 'status': 'error',
+                      'reasons': f'{type(exc).__name__}: {exc}'}
+            details = {}
+        yield result, details
+
+
+def write_reports(reports, csv_path, jsonl_path):
+    """Serialize the established CSV and detailed JSONL report formats."""
+    rows = []
+    with Path(jsonl_path).open('w', encoding='utf-8') as handle:
+        for result, details in reports:
+            rows.append(result)
+            handle.write(json.dumps({'result': result, 'details': details}) + '\n')
+    with Path(csv_path).open('w', newline='', encoding='utf-8') as handle:
+        writer = csv.DictWriter(handle, fieldnames=FIELDS)
+        writer.writeheader()
+        writer.writerows(rows)
+    return rows
 
 
 def main():
@@ -321,22 +360,8 @@ def main():
     parser.add_argument('--peptide-chain')
     args = parser.parse_args()
     manifest = json.loads(args.manifest.read_text(encoding='utf-8'))
-    rows = []
-    with args.jsonl.open('w', encoding='utf-8') as handle:
-        for entry in manifest:
-            try:
-                result, details = validate_structure(entry, args.peptide_chain)
-            except Exception as exc:
-                result = {'path': entry['path'], 'site': entry['site'],
-                          'sample': entry['sample'], 'status': 'error',
-                          'reasons': f'{type(exc).__name__}: {exc}'}
-                details = {}
-            rows.append(result)
-            handle.write(json.dumps({'result': result, 'details': details}) + '\n')
-    with args.csv.open('w', newline='', encoding='utf-8') as handle:
-        writer = csv.DictWriter(handle, fieldnames=FIELDS)
-        writer.writeheader()
-        writer.writerows(rows)
+    rows = write_reports(
+        validate_manifest(manifest, args.peptide_chain), args.csv, args.jsonl)
     print(f'OpenStructure checked {len(rows)} complexes: '
           f'{sum(r["status"] == "valid" for r in rows)} valid, '
           f'{sum(r["status"] == "invalid" for r in rows)} invalid, '

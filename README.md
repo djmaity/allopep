@@ -6,9 +6,11 @@ PepGLAD, checks their structures, and ranks valid designs with Vina.
 ## Setup
 
 Install Conda, Git, `unzip`, `curl` or `wget`, and `sha256sum` or `shasum`.
-Then clone AlloPep and run its installer:
+Place `peptide-vina-scoring` at `~/repos/peptide-vina-scoring`, alongside the
+AlloPep checkout. Run the installer from `~/repos/allopep`:
 
 ```bash
+cd ~/repos
 git clone https://github.com/djmaity/allopep.git
 cd allopep
 bash install.sh
@@ -18,7 +20,8 @@ The installer fetches pinned GAPS and PepGLAD code, applies their tracked patche
 downloads PepGLAD checkpoints, and creates or updates the `gaps`, `PepGLAD`,
 and `allopep` environments. It also installs Ray's metrics dependencies and
 builds the rotarama cache. Rerun `bash install.sh` to complete an interrupted
-installation or update existing environments. The Vina scorer is bundled here.
+installation or update existing environments. It installs the shared Vina
+scorer as an editable package in the `allopep` environment.
 
 ## Run
 
@@ -80,5 +83,4 @@ Vina scoring. Inspect the validation CSV and JSONL for the reasons.
 Vina scores the generated pose without docking and ranks lower scores first.
 GAPS-guided sampling is experimental. These scores and geometry checks do not
 establish experimental affinity or dynamic stability. See
-[the bundled scorer documentation](vina_scoring/README.md)
-for scoring details.
+`~/repos/peptide-vina-scoring/README.md` for scoring details.

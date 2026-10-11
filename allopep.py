@@ -181,7 +181,7 @@ def run_openstructure_validation(generated, score_dir, prefix, peptide_chain, in
 
 def rank_pepglad_outputs(valid_designs, score_dir, prefix,
                          box_padding=5.0, hydrogen_policy='keep'):
-    """Run the bundled rigid-pose scorer and rank successful total scores."""
+    """Run the installed rigid-pose scorer and rank successful total scores."""
     score_file = score_dir / f'{prefix}_vina_ranked.csv'
     score_file.unlink(missing_ok=True)
     manifest_file = score_dir / f'{prefix}_vina_manifest.csv'
@@ -209,9 +209,9 @@ def rank_pepglad_outputs(valid_designs, score_dir, prefix,
             writer.writerow({'id': job_id, 'complex_pdb': sample['path'],
                              'peptide_chain': sample['peptide_chain']})
 
-    scorer = Path(__file__).with_name('vina_scoring') / 'vina_score.py'
     subprocess.run([
-        sys.executable, str(scorer), '--manifest', str(manifest_file),
+        sys.executable, '-m', 'peptide_vina_scoring.vina_score',
+        '--manifest', str(manifest_file),
         '--workers', '1', '--box-padding', str(box_padding),
         '--hydrogen-policy', hydrogen_policy,
         '--output', str(temporary_results),

@@ -3,6 +3,7 @@
 set -Eeuo pipefail
 
 readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+readonly VINA_SCORER_DIR="${SCRIPT_DIR}/../peptide-vina-scoring"
 readonly GAPS_REPOSITORY="https://github.com/hongliangduan/GAPS.git"
 readonly GAPS_REVISION="c67cba6ca3ef45470bee8bbb2f0c832680c18044"
 readonly PEPGLAD_REPOSITORY="https://github.com/THUNLP-MT/PepGLAD.git"
@@ -182,6 +183,8 @@ install_environments() {
         printf 'Creating allopep environment...\n'
         conda env create -y -n allopep -f "${SCRIPT_DIR}/environment.yml"
     fi
+    conda run --no-capture-output -n allopep \
+        python -m pip install --no-deps --editable "${VINA_SCORER_DIR}"
     conda run --no-capture-output -n allopep mmtbx.rebuild_rotarama_cache
 }
 
@@ -197,6 +200,8 @@ main() {
         ! command -v shasum >/dev/null 2>&1; then
         die 'Required command not found: install sha256sum or shasum'
     fi
+    [[ -f "${VINA_SCORER_DIR}/pyproject.toml" ]] ||
+        die "Shared Vina scorer not found: ${VINA_SCORER_DIR}"
 
     install_repository GAPS "${GAPS_REPOSITORY}" "${GAPS_REVISION}"
     touch "${SCRIPT_DIR}/GAPS/__init__.py"

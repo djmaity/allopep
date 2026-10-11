@@ -130,8 +130,8 @@ class VinaRankingTests(unittest.TestCase):
 
             def write_results(command, check):
                 self.assertTrue(check)
-                self.assertIn('vina_scoring/vina_score.py',
-                              command[1].replace('\\', '/'))
+                self.assertEqual(command[1:3],
+                                 ['-m', 'peptide_vina_scoring.vina_score'])
                 manifest = Path(command[command.index('--manifest') + 1])
                 with manifest.open(newline='') as handle:
                     jobs = list(csv.DictReader(handle))

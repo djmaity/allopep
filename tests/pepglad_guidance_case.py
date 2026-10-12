@@ -12,11 +12,22 @@ import torch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'PepGLAD'))
 
-from api.run import DesignDataset, combined_guidance_energy, score_proximity_energy
+from api.run import (DesignDataset, combined_guidance_energy,
+                     peptide_coordinates_supported, score_proximity_energy)
 from models.LDM.diffusion.transition import ContinuousTransition
 
 
 class PepgladGuidanceTests(unittest.TestCase):
+    def test_divergent_coordinates_are_rejected_before_pdb_write(self):
+        atom = SimpleNamespace(coordinate=torch.tensor([-30.0, 20.0, 10.0]))
+        self.assertTrue(peptide_coordinates_supported([[atom]]))
+        atom.coordinate = torch.tensor([5256507.0, 58924.664, -4087467.25])
+        self.assertFalse(peptide_coordinates_supported([[atom]]))
+        atom.coordinate = torch.tensor([float('nan'), 20.0, 10.0])
+        self.assertFalse(peptide_coordinates_supported([[atom]]))
+        atom.coordinate = torch.tensor([-999.9998, 20.0, 10.0])
+        self.assertFalse(peptide_coordinates_supported([[atom]]))
+
     def test_scored_and_unscored_pocket_formats(self):
         pdb = ROOT / 'PepGLAD/assets/1ssc_A_B.pdb'
         original = ROOT / 'PepGLAD/assets/1ssc_A_pocket.json'

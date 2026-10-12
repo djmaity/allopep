@@ -121,6 +121,32 @@ class RosettaRankingTests(unittest.TestCase):
             self.assertEqual(command[command.index('--out_dir') + 1], f'../{output_pdb.parent}')
             self.assertEqual(command[command.index('--score-guidance-strength') + 1], '1.0')
 
+    def test_resume_reuses_only_relaxed_matching_site(self):
+        residue = ScoredResidue('A', 1, ' ', 0.873241, (0.0, 0.0, 0.0), 0.5)
+        context = GuidanceContext(residue, (residue,))
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            pocket = root / 'target_allosteric_sites' / 'target_allosteric_site_1.json'
+            pocket.parent.mkdir()
+            pocket.write_text(json.dumps(context.as_pepglad_pocket()))
+            site = root / 'target_PepGLAD_outputs' / 'target_allosteric_site_1_codesign'
+            site.mkdir(parents=True)
+            pdb = site / 'target_0.pdb'
+            pdb.write_text('REMARK   1 CREATED WITH OPENMM 8.0\n')
+            (site / 'summary.jsonl').write_text(json.dumps({
+                'id': 'target_0', 'pep_seq': 'LHLKA',
+                'pep_chain': 'B', 'rec_chains': ['A'],
+            }) + '\n')
+            args = SimpleNamespace(resume=True, num_samples=1)
+            with patch('allopep.subprocess.run') as subprocess_run:
+                self.assertEqual(run_pepglad(
+                    args, '/input/target.pdb', root, 'target', [context]),
+                    [design(pdb)])
+                subprocess_run.assert_not_called()
+            pdb.write_text('ATOM      1\n')
+            with self.assertRaisesRegex(RuntimeError, 'unrelaxed samples'):
+                run_pepglad(args, '/input/target.pdb', root, 'target', [context])
+
     def test_ranks_only_validated_structures_by_lower_rosetta_score(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -308,6 +334,24 @@ class RosettaRankingTests(unittest.TestCase):
                     design(site / 'target_0.pdb'),
                     design(site / 'target_1.pdb', sample=1),
                 ])
+
+    def test_existing_outputs_accept_reported_invalid_sample(self):
+        with tempfile.TemporaryDirectory() as directory:
+            site = (Path(directory) / 'target_PepGLAD_outputs' /
+                    'target_allosteric_site_1_codesign')
+            site.mkdir(parents=True)
+            (site / 'target_0.pdb').touch()
+            (site / 'summary.jsonl').write_text(''.join(json.dumps({
+                'id': f'target_{sample}', 'pep_seq': 'LHLKA',
+                'pep_chain': 'B', 'rec_chains': ['A'],
+                **({'status': 'invalid', 'error': 'bad coordinates'}
+                   if sample == 1 else {}),
+            }) + '\n' for sample in (0, 1)))
+            self.assertEqual(find_existing_pepglad_outputs(
+                Path(directory), 'target'), [design(site / 'target_0.pdb')])
+            (site / 'target_1.pdb').touch()
+            with self.assertRaisesRegex(ValueError, 'extra=.*target_1'):
+                find_existing_pepglad_outputs(Path(directory), 'target')
 
     def test_summary_loader_rejects_duplicate_and_missing_ids(self):
         with tempfile.TemporaryDirectory() as directory:

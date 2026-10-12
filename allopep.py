@@ -35,23 +35,25 @@ def parse_args(argv=None):
         description='Pipeline for allosteric peptide design',
     )
     parser.add_argument('pdb_file')
-    parser.add_argument('--max_rank', default=3, type=_max_rank,
+    parser.add_argument('-r', '--max_rank', default=3, type=_max_rank,
                         help='Number of separated GAPS sites to design (default: 3; "all" for every site)')
-    parser.add_argument('--length_min', default=5, type=int,
+    parser.add_argument('-l', '--length_min', default=5, type=int,
                         help='Minimum length of the predicted peptide')
-    parser.add_argument('--length_max', default=10, type=int,
+    parser.add_argument('-L', '--length_max', default=10, type=int,
                         help='Maximum length of the predicted peptide')
-    parser.add_argument('--num_samples', default=10, type=int,
+    parser.add_argument('-n', '--num_samples', default=10, type=int,
                         help='Number of predicted peptides per site')
-    parser.add_argument('--score-guidance-strength', default=1.0, type=float,
+    parser.add_argument('-g', '--score-guidance-strength', default=1.0, type=float,
                         help='Strength of continuous GAPS score guidance (default: 1.0)')
-    parser.add_argument('--peptide-chain', default=None,
+    parser.add_argument('-c', '--peptide-chain', default=None,
                         help='Known peptide chain ID; uses PepGLAD summary if omitted')
     existing = parser.add_mutually_exclusive_group()
-    existing.add_argument('--validate-existing', action='store_true',
+    existing.add_argument('-v', '--validate-existing', action='store_true',
                           help='Check existing PepGLAD PDBs without rerunning design or scoring')
-    existing.add_argument('--rank-existing', action='store_true',
+    existing.add_argument('-R', '--rank-existing', action='store_true',
                           help='Validate and rank existing PepGLAD PDBs with Rosetta')
+    existing.add_argument('--resume', action='store_true',
+                          help='Reuse completed PepGLAD sites and design missing sites')
     parser.add_argument('--rosetta-bin', default=None,
                         help='InterfaceAnalyzer executable (default: find on PATH)')
     return parser.parse_args(argv)
@@ -101,13 +103,36 @@ def run_pepglad(args, pdb_file, out_dir, prefix, contexts):
     generated = []
     for rank, context in enumerate(contexts, start=1):
         pocket_file = sites_dir / f'{prefix}_allosteric_site_{rank}.json'
-        with pocket_file.open('w', encoding='utf-8') as handle:
-            json.dump(context.as_pepglad_pocket(), handle)
-
+        pocket = context.as_pepglad_pocket()
         codesign_dir = (
             out_dir / f'{prefix}_PepGLAD_outputs'
             / f'{prefix}_allosteric_site_{rank}_codesign'
         )
+        if getattr(args, 'resume', False) and codesign_dir.exists():
+            if not pocket_file.is_file() or json.loads(pocket_file.read_text()) != pocket:
+                raise ValueError(f'Saved PepGLAD pocket differs for site {rank}: {pocket_file}')
+            summary_path = codesign_dir / 'summary.jsonl'
+            records = [json.loads(line) for line in summary_path.read_text().splitlines()
+                       if line.strip()]
+            expected = {f'{prefix}_{i}' for i in range(args.num_samples)}
+            if len(records) != args.num_samples or {r['id'] for r in records} != expected:
+                raise ValueError(f'Saved PepGLAD sample IDs differ: {summary_path}')
+            site_generated = [(codesign_dir / f'{prefix}_{i}.pdb', rank, i)
+                              for i in range(args.num_samples)
+                              if (codesign_dir / f'{prefix}_{i}.pdb').is_file()]
+            designs = load_design_outputs(
+                site_generated, exact=True, summary_paths=[summary_path])
+            for design in designs:
+                with design.path.open(encoding='utf-8') as handle:
+                    if not handle.readline().startswith('REMARK   1 CREATED WITH OPENMM'):
+                        raise RuntimeError(
+                            f'PepGLAD site {rank} has unrelaxed samples; '
+                            f'run recover_pepglad_relaxation.py on {codesign_dir}')
+            generated.extend(site_generated)
+            print(f'Reusing {len(designs)} relaxed designs for site {rank}')
+            continue
+        with pocket_file.open('w', encoding='utf-8') as handle:
+            json.dump(pocket, handle)
         subprocess.run([
             'conda', 'run', '--no-capture-output', '-n', 'PepGLAD',
             'python', '-m', 'api.run', '--mode', 'codesign',
@@ -122,11 +147,11 @@ def run_pepglad(args, pdb_file, out_dir, prefix, contexts):
 
         for sample_index in range(args.num_samples):
             output_pdb = codesign_dir / f'{prefix}_{sample_index}.pdb'
-            if not output_pdb.is_file():
-                raise FileNotFoundError(
-                    f'PepGLAD did not produce expected output: {output_pdb}'
-                )
-            generated.append((output_pdb, rank, sample_index))
+            if output_pdb.is_file():
+                generated.append((output_pdb, rank, sample_index))
+        load_design_outputs(
+            [entry for entry in generated if entry[1] == rank],
+            exact=True, summary_paths=[codesign_dir / 'summary.jsonl'])
     return load_design_outputs(generated)
 
 

@@ -1,25 +1,16 @@
 diff --git a/api/run.py b/api/run.py
-index 773a539..5881b72 100644
+index 773a539..932cb23 100644
 --- a/api/run.py
 +++ b/api/run.py
-@@ -4,12 +4,14 @@ import os
- import sys
- import json
+@@ -6,2 +6,3 @@ import json
  import argparse
 +import math
  from tqdm import tqdm
- from os.path import splitext, basename
- 
- import ray
- import numpy as np
+@@ -12,2 +13,3 @@ import numpy as np
  import torch
 +import torch.nn.functional as F
  from torch.utils.data import DataLoader
- 
- from data.format import Atom, Block, VOCAB
-@@ -21,6 +23,38 @@ from utils.logger import print_log
- from evaluation.dG.openmm_relaxer import ForceFieldMinimizer
- 
+@@ -23,2 +25,46 @@ from evaluation.dG.openmm_relaxer import ForceFieldMinimizer
  
 +def score_proximity_energy(X, mask_generate, batch_ids, scores):
 +    """Attract generated latent positions to high-scoring receptor C-alpha atoms."""
@@ -53,12 +44,20 @@ index 773a539..5881b72 100644
 +    return energy
 +
 +
++def peptide_coordinates_supported(blocks):
++    """Reject divergent peptide coordinates before writing a fixed-width PDB."""
++    for block in blocks:
++        for atom in block:
++            coordinate = np.asarray(atom.coordinate)
++            if (not np.isfinite(coordinate).all()
++                    or not (np.abs(coordinate) < 1000.0).all()
++                    or any(len(f'{float(value):8.3f}') > 8 for value in coordinate)):
++                return False
++    return True
++
++
  class DesignDataset(torch.utils.data.Dataset):
- 
-     MAX_N_ATOM = 14
-@@ -40,23 +74,39 @@ class DesignDataset(torch.utils.data.Dataset):
- 
-         with open(epitope_def, 'r') as fin:
+@@ -42,9 +88,20 @@ class DesignDataset(torch.utils.data.Dataset):
              epitope = json.load(fin)
 -        to_str = lambda pos: f'{pos[0]}-{pos[1]}'
          epi_map = {}
@@ -85,10 +84,7 @@ index 773a539..5881b72 100644
 +            chain_scores[key] = float(score)
 +        residues, position_ids, scores = [], [], []
          chain2blocks = pdb_to_list_blocks(pdb, list(epi_map.keys()), dict_form=True)
-         if len(chain2blocks) != len(epi_map):
-             print_log(f'Some chains in the epitope are missing. Parsed {list(chain2blocks.keys())}, given {list(epi_map.keys())}.', level='WARN')
-         for chain_name in chain2blocks:
-             chain = chain2blocks[chain_name]
+@@ -55,6 +112,11 @@ class DesignDataset(torch.utils.data.Dataset):
              for i, block in enumerate(chain):  # residue
 -                if to_str(block.id) in epi_map[chain_name]:
 +                if block.id in epi_map[chain_name]:
@@ -102,28 +98,16 @@ index 773a539..5881b72 100644
 +            raise ValueError('Pocket contains no receptor residues')
 +        return residues, position_ids, chain2blocks, scores
  
-     def generate_pep_chain(self, idx):
-         if self.lengths_range is not None: # codesign
-@@ -78,7 +128,7 @@ class DesignDataset(torch.utils.data.Dataset):
-         return len(self.pdbs)
- 
+@@ -80,3 +142,3 @@ class DesignDataset(torch.utils.data.Dataset):
      def __getitem__(self, idx: int):
 -        rec_blocks, rec_position_ids, rec_chain2blocks = self.get_epitope(idx)
 +        rec_blocks, rec_position_ids, rec_chain2blocks, rec_scores = self.get_epitope(idx)
          lig_blocks = self.generate_pep_chain(idx)
- 
-         mask = [0 for _ in rec_blocks] + [1 for _ in lig_blocks]
-@@ -118,6 +168,7 @@ class DesignDataset(torch.utils.data.Dataset):
-             'position_ids': torch.tensor(position_ids, dtype=torch.long),   # [N]
-             'mask': mask,                                                   # [N], 1 for generation
+@@ -120,2 +182,3 @@ class DesignDataset(torch.utils.data.Dataset):
              'atom_mask': atom_mask,                                         # [N, 14] or [N, 4], 1 for having records in the PDB
 +            'site_scores': torch.tensor(rec_scores + [0.0] * len(lig_blocks), dtype=torch.float),
              'lengths': len(S),
-             'rec_chain2blocks': rec_chain2blocks,
-             'L': L
-@@ -144,7 +195,10 @@ def openmm_relax(pdb_path):
- 
- 
+@@ -146,3 +209,6 @@ def openmm_relax(pdb_path):
  def design(mode, ckpt, gpu, pdbs, epitope_defs, n_samples, out_dir,
 -           lengths_range=None, seqs=None, identifiers=None, batch_size=8, num_workers=4):
 +           lengths_range=None, seqs=None, identifiers=None, batch_size=8, num_workers=4,
@@ -131,11 +115,11 @@ index 773a539..5881b72 100644
 +    if not math.isfinite(score_guidance_strength) or score_guidance_strength < 0:
 +        raise ValueError('score_guidance_strength must be finite and nonnegative')
  
-     # create out dir
-     if not os.path.exists(out_dir):
-@@ -189,13 +243,18 @@ def design(mode, ckpt, gpu, pdbs, epitope_defs, n_samples, out_dir,
-                 if hasattr(batch[k], 'to'):
-                     batch[k] = batch[k].to(device)
+@@ -184,2 +250,3 @@ def design(mode, ckpt, gpu, pdbs, epitope_defs, n_samples, out_dir,
+     all_pdbs = []
++    invalid_samples = 0
+     for batch in tqdm(dataloader):
+@@ -191,2 +258,7 @@ def design(mode, ckpt, gpu, pdbs, epitope_defs, n_samples, out_dir,
              # generate
 +            def guidance_energy(X, mask_generate, batch_ids):
 +                return combined_guidance_energy(
@@ -143,29 +127,48 @@ index 773a539..5881b72 100644
 +                    score_guidance_strength)
 +
              batch_X, batch_S, batch_pmetric = model.sample(
-                 batch['X'], batch['S'],
-                 batch['mask'], batch['position_ids'],
-                 batch['lengths'], batch['atom_mask'],
+@@ -196,4 +268,4 @@ def design(mode, ckpt, gpu, pdbs, epitope_defs, n_samples, out_dir,
                  L=batch['L'], sample_opt={
 -                    'energy_func': 'default',
 -                    'energy_lambda': 0.5 if mode == 'struct_pred' else 0.8
 +                    'energy_func': guidance_energy,
 +                    'energy_lambda': 1.0
                  }
-             )
-         # save data
-@@ -252,6 +311,8 @@ def parse():
-     parser.add_argument('--length_min', type=int, required='codesign' in sys.argv, help='Minimum peptide length for codesign (inclusive)')
-     parser.add_argument('--length_max', type=int, required='codesign' in sys.argv, help='Maximum peptide length for codesign (exclusive)')
+@@ -219,5 +291,3 @@ def design(mode, ckpt, gpu, pdbs, epitope_defs, n_samples, out_dir,
+             out_pdb = os.path.join(out_dir, expand_ids[cnt] + '.pdb')
+-            list_blocks_to_pdb(list_blocks, chain_names, out_pdb)
+-            all_pdbs.append(out_pdb)
+-            result_summary.write(json.dumps({
++            record = {
+                 'id': expand_ids[cnt],
+@@ -226,3 +296,16 @@ def design(mode, ckpt, gpu, pdbs, epitope_defs, n_samples, out_dir,
+                 'pep_seq': ''.join([VOCAB.abrv_to_symbol(block.abrv) for block in lig_blocks])
+-            }) + '\n')
++            }
++            # A divergent sample can contain coordinates that overflow the
++            # fixed-width PDB columns. PDBFixer cannot parse such a file, and
++            # one Ray task failure would otherwise abort the whole site.
++            if not peptide_coordinates_supported(lig_blocks):
++                record['status'] = 'invalid'
++                record['error'] = 'Generated peptide coordinates are non-finite or outside supported PDB range'
++                invalid_samples += 1
++                if os.path.exists(out_pdb):
++                    os.remove(out_pdb)
++            else:
++                list_blocks_to_pdb(list_blocks, chain_names, out_pdb)
++                all_pdbs.append(out_pdb)
++            result_summary.write(json.dumps(record) + '\n')
+             result_summary.flush()
+@@ -232 +315,3 @@ def design(mode, ckpt, gpu, pdbs, epitope_defs, n_samples, out_dir,
++    if invalid_samples:
++        print_log(f'Skipped {invalid_samples} invalid coordinate samples; see {out_dir}/summary.jsonl', level='WARN')
+     print_log(f'Running openmm relaxation...')
+@@ -254,2 +339,4 @@ def parse():
      parser.add_argument('--gpu', type=int, default=0, help='GPU to use')
 +    parser.add_argument('--score-guidance-strength', type=float, default=1.0,
 +                        help='Strength of score-weighted spatial guidance')
      return parser.parse_args()
- 
- 
-@@ -270,5 +331,6 @@ if __name__ == '__main__':
-         out_dir=args.out_dir,               # output directory
-         identifiers=[os.path.basename(os.path.splitext(args.pdb)[0])], # file name (name of each output candidate)
+@@ -272,3 +359,4 @@ if __name__ == '__main__':
          lengths_range=[(args.length_min, args.length_max)] if args.mode == 'codesign' else None,    # range of acceptable peptide lengths, left inclusive, right exclusive
 -        seqs=[args.peptide_seq] if args.mode == 'struct_pred' else None                             # peptide sequences for structure prediction
 -    )
@@ -177,9 +180,7 @@ diff --git a/models/LDM/diffusion/transition.py b/models/LDM/diffusion/transitio
 index 71d6cce..1a654b6 100644
 --- a/models/LDM/diffusion/transition.py
 +++ b/models/LDM/diffusion/transition.py
-@@ -94,12 +94,8 @@ class ContinuousTransition(nn.Module):
-         )
- 
+@@ -96,8 +96,4 @@ class ContinuousTransition(nn.Module):
          if guidance is not None:
 -            eps_p = eps_p - torch.sqrt(1 - alpha_bar).view(*expand_shape) * guidance
 +            eps_p = eps_p - torch.sqrt(1 - alpha_bar).view(*expand_shape) * guidance_weight * guidance
@@ -189,5 +190,3 @@ index 71d6cce..1a654b6 100644
 -        # else:
 -        #     p_next = c0 * (p_t - c1 * eps_p) + sigma * z
          p_next = c0 * (p_t - c1 * eps_p) + sigma * z
-         p_next = torch.where(mask_generate.expand_as(p_t), p_next, p_t)
-         return p_next

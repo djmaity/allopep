@@ -91,9 +91,9 @@ def run_prediction(pdb_filepath, out_dir, pytorch_device='cuda'):
 
 def main():
     parser = argparse.ArgumentParser(description='GAPS binding-site prediction')
-    parser.add_argument('--pdb', required=True, type=Path)
-    parser.add_argument('--out-dir', required=True, type=Path)
-    parser.add_argument('--device', default='cuda')
+    parser.add_argument('-p', '--pdb', required=True, type=Path)
+    parser.add_argument('-o', '--out-dir', required=True, type=Path)
+    parser.add_argument('-d', '--device', default='cuda')
     args = parser.parse_args()
     run_prediction(args.pdb, args.out_dir, args.device)
 

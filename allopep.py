@@ -10,10 +10,10 @@ import os
 import re
 import shutil
 import subprocess
-import sys
 from pathlib import Path
 
 from pepglad_outputs import load_design_outputs
+from rosetta_scoring import rank_pepglad_outputs, resolve_rosetta_binary
 import run_gaps
 
 
@@ -51,11 +51,9 @@ def parse_args(argv=None):
     existing.add_argument('--validate-existing', action='store_true',
                           help='Check existing PepGLAD PDBs without rerunning design or scoring')
     existing.add_argument('--rank-existing', action='store_true',
-                          help='Validate and rank existing PepGLAD PDBs with Vina')
-    parser.add_argument('--vina-box-padding', default=5.0, type=float,
-                        help='Vina box padding on each side of the peptide in angstroms (default: 5)')
-    parser.add_argument('--vina-hydrogen-policy', choices=('keep', 'rebuild'),
-                        default='keep', help='Meeko hydrogen policy (default: keep)')
+                          help='Validate and rank existing PepGLAD PDBs with Rosetta')
+    parser.add_argument('--rosetta-bin', default=None,
+                        help='InterfaceAnalyzer executable (default: find on PATH)')
     return parser.parse_args(argv)
 
 
@@ -179,90 +177,6 @@ def run_openstructure_validation(generated, score_dir, prefix, peptide_chain, in
     return valid
 
 
-def rank_pepglad_outputs(valid_designs, score_dir, prefix,
-                         box_padding=5.0, hydrogen_policy='keep'):
-    """Run the installed rigid-pose scorer and rank successful total scores."""
-    score_file = score_dir / f'{prefix}_vina_ranked.csv'
-    score_file.unlink(missing_ok=True)
-    manifest_file = score_dir / f'{prefix}_vina_manifest.csv'
-    result_file = score_dir / f'{prefix}_vina_results.csv'
-    result_file.unlink(missing_ok=True)
-    temporary_results = score_dir / f'{prefix}_vina_results.csv.tmp'
-    temporary_results.unlink(missing_ok=True)
-    samples = {}
-    for design in valid_designs:
-        if design.job_id in samples:
-            raise ValueError(f'Duplicate PepGLAD job ID: {design.job_id}')
-        samples[design.job_id] = {
-            'site': design.site, 'sample': design.sample,
-            'path': design.resolved_path,
-            'peptide_chain': design.peptide_chain,
-        }
-    if not samples:
-        raise ValueError('No validated PepGLAD structures to score')
-
-    with manifest_file.open('w', newline='', encoding='utf-8') as handle:
-        writer = csv.DictWriter(handle, fieldnames=('id', 'complex_pdb',
-                                                     'peptide_chain'))
-        writer.writeheader()
-        for job_id, sample in samples.items():
-            writer.writerow({'id': job_id, 'complex_pdb': sample['path'],
-                             'peptide_chain': sample['peptide_chain']})
-
-    subprocess.run([
-        sys.executable, '-m', 'peptide_vina_scoring.vina_score',
-        '--manifest', str(manifest_file),
-        '--workers', '1', '--box-padding', str(box_padding),
-        '--hydrogen-policy', hydrogen_policy,
-        '--output', str(temporary_results),
-    ], check=True)
-    temporary_results.replace(result_file)
-
-    with result_file.open(newline='', encoding='utf-8') as handle:
-        results = list(csv.DictReader(handle))
-    if len(results) != len(samples) or {row['id'] for row in results} != set(samples):
-        raise RuntimeError(f'Vina result count or IDs differ from {manifest_file}')
-    if any(row.get('protocol_id') != 'rigid_meeko_vina_residue_sum_v1'
-           for row in results):
-        raise RuntimeError(f'Unsupported Vina scoring protocol: {result_file}')
-    rows = []
-    for result in results:
-        if result['status'] == 'error':
-            continue
-        if result['status'] != 'ok':
-            raise RuntimeError(f'Unexpected Vina status for {result["id"]}: '
-                               f'{result["status"]}')
-        score = float(result['score_total'])
-        if not math.isfinite(score):
-            raise RuntimeError(f'Non-finite Vina score for {result["id"]}')
-        rows.append({
-            **samples[result['id']],
-            'vina_score_kcal_mol': score,
-            'vina_ligand_inter_kcal_mol': result['score_ligand_inter'],
-            'vina_box_padding_a': box_padding,
-            'vina_hydrogen_policy': hydrogen_policy,
-            'vina_version': result['vina_version'],
-            'meeko_version': result['meeko_version'],
-        })
-    if not rows:
-        raise RuntimeError(f'All {len(samples)} Vina scoring jobs failed; '
-                           f'see {result_file}')
-    rows.sort(key=lambda row: (row['vina_score_kcal_mol'],
-                               row['site'], row['sample']))
-    for rank, row in enumerate(rows, start=1):
-        row['rank'] = rank
-
-    with score_file.open('w', newline='', encoding='utf-8') as handle:
-        writer = csv.DictWriter(handle, fieldnames=(
-            'rank', 'site', 'sample', 'path', 'peptide_chain',
-            'vina_score_kcal_mol', 'vina_ligand_inter_kcal_mol',
-            'vina_box_padding_a', 'vina_hydrogen_policy',
-            'vina_version', 'meeko_version'))
-        writer.writeheader()
-        writer.writerows(rows)
-    return rows
-
-
 def find_existing_pepglad_outputs(out_dir, prefix):
     generated = []
     summary_paths = []
@@ -332,17 +246,16 @@ def main(argv=None):
         raise ValueError('--length_min must be positive and no greater than --length_max')
     if args.num_samples < 1:
         raise ValueError('--num_samples must be positive')
-    if not math.isfinite(args.vina_box_padding) or args.vina_box_padding <= 0:
-        raise ValueError('--vina-box-padding must be finite and positive')
     if not math.isfinite(args.score_guidance_strength) or args.score_guidance_strength < 0:
         raise ValueError('--score-guidance-strength must be finite and nonnegative')
     if args.peptide_chain is not None and not re.fullmatch(r'[A-Za-z0-9]', args.peptide_chain):
         raise ValueError('--peptide-chain must be one alphanumeric chain ID')
+    rosetta_bin = None if args.validate_existing else resolve_rosetta_binary(args.rosetta_bin)
     prefix = Path(args.pdb_file).stem
     out_dir = Path('output') / f'{prefix}_output'
     reuse_existing = args.validate_existing or args.rank_existing
     pdb_file = prepare_input_pdb(args.pdb_file, out_dir, reuse_existing)
-    score_dir = out_dir / f'{prefix}_vina_score'
+    score_dir = out_dir / f'{prefix}_rosetta_score'
     if reuse_existing:
         generated = find_existing_pepglad_outputs(out_dir, prefix)
         if not generated:
@@ -365,22 +278,19 @@ def main(argv=None):
     if args.validate_existing:
         return
     if not valid_designs:
-        (score_dir / f'{prefix}_vina_ranked.csv').unlink(missing_ok=True)
-        (score_dir / f'{prefix}_vina_results.csv').unlink(missing_ok=True)
-        (score_dir / f'{prefix}_vina_manifest.csv').unlink(missing_ok=True)
+        (score_dir / f'{prefix}_rosetta_ranked.csv').unlink(missing_ok=True)
+        (score_dir / f'{prefix}_rosetta_results.csv').unlink(missing_ok=True)
+        (score_dir / f'{prefix}_rosetta_manifest.csv').unlink(missing_ok=True)
         print('No PepGLAD structures passed OpenStructure validation; '
               f'see {score_dir / (prefix + "_pepglad_validation.csv")}')
         return
 
-    ranked = rank_pepglad_outputs(
-        valid_designs, score_dir, prefix,
-        box_padding=args.vina_box_padding,
-        hydrogen_policy=args.vina_hydrogen_policy)
+    ranked = rank_pepglad_outputs(valid_designs, score_dir, prefix, rosetta_bin)
     failures = len(valid_designs) - len(ranked)
-    print(f'Ranked {len(ranked)} PepGLAD structures by Vina score '
+    print(f'Ranked {len(ranked)} PepGLAD structures by Rosetta dG_separated '
           f'({failures} scoring failures); '
-          f'see {score_dir / (prefix + "_vina_ranked.csv")} and '
-          f'{score_dir / (prefix + "_vina_results.csv")}')
+          f'see {score_dir / (prefix + "_rosetta_ranked.csv")} and '
+          f'{score_dir / (prefix + "_rosetta_results.csv")}')
 
 
 if __name__ == '__main__':

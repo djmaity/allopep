@@ -1,4 +1,4 @@
-"""Tests for PepGLAD validation and Vina ranking."""
+"""Tests for PepGLAD validation and Rosetta ranking."""
 
 import csv
 import json
@@ -12,6 +12,7 @@ from allopep import (find_existing_pepglad_outputs, prepare_input_pdb,
                      main, rank_pepglad_outputs, run_openstructure_validation,
                      run_pepglad, write_pymol_script)
 from pepglad_outputs import DesignOutput, load_design_outputs
+from rosetta_scoring import parse_scorefile, resolve_rosetta_binary
 from run_gaps import GuidanceContext, ScoredResidue
 
 
@@ -21,7 +22,7 @@ def design(path, site=1, sample=0, sequence='LHLKA', peptide_chain='B',
                         peptide_chain, receptor_chains)
 
 
-class VinaRankingTests(unittest.TestCase):
+class RosettaRankingTests(unittest.TestCase):
     def test_pymol_script_aligns_every_complex_to_input_receptor(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / 'target output'
@@ -120,99 +121,141 @@ class VinaRankingTests(unittest.TestCase):
             self.assertEqual(command[command.index('--out_dir') + 1], f'../{output_pdb.parent}')
             self.assertEqual(command[command.index('--score-guidance-strength') + 1], '1.0')
 
-    def test_ranks_only_validated_structures_by_lower_vina_score(self):
+    def test_ranks_only_validated_structures_by_lower_rosetta_score(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             structures = [root / f'target_{i}.pdb' for i in range(4)]
             valid = [design(structures[0]),
-                     design(structures[2], 2, 0, peptide_chain='C'),
-                     design(structures[3], 2, 1, peptide_chain='C')]
+                     design(structures[2], 2, 0, peptide_chain='C',
+                            receptor_chains=('A', 'B')),
+                     design(structures[3], 2, 1, peptide_chain='C',
+                            receptor_chains=('A', 'B'))]
+            for output in valid:
+                output.path.write_text(''.join(
+                    f'ATOM      1  CA  ALA {chain}   1      0.000   0.000   0.000\n'
+                    for chain in (*output.receptor_chains, output.peptide_chain)))
 
-            def write_results(command, check):
-                self.assertTrue(check)
-                self.assertEqual(command[1:3],
-                                 ['-m', 'peptide_vina_scoring.vina_score'])
-                manifest = Path(command[command.index('--manifest') + 1])
-                with manifest.open(newline='') as handle:
-                    jobs = list(csv.DictReader(handle))
-                self.assertEqual([job['id'] for job in jobs],
-                                 ['site_1_sample_0', 'site_2_sample_0',
-                                  'site_2_sample_1'])
-                output = Path(command[command.index('--output') + 1])
-                with output.open('w', newline='') as handle:
-                    writer = csv.DictWriter(handle, fieldnames=(
-                        'protocol_id', 'id', 'status',
-                        'score_total', 'score_ligand_inter',
-                        'vina_version', 'meeko_version', 'error'))
-                    writer.writeheader()
-                    writer.writerows([
-                        {'protocol_id': 'rigid_meeko_vina_residue_sum_v1',
-                         'id': 'site_1_sample_0', 'status': 'ok',
-                         'score_total': -4.0, 'score_ligand_inter': -4.2,
-                         'vina_version': '1.2.7', 'meeko_version': '0.8.0'},
-                        {'protocol_id': 'rigid_meeko_vina_residue_sum_v1',
-                         'id': 'site_2_sample_0', 'status': 'ok',
-                         'score_total': -8.0, 'score_ligand_inter': -8.1,
-                         'vina_version': '1.2.7', 'meeko_version': '0.8.0'},
-                        {'protocol_id': 'rigid_meeko_vina_residue_sum_v1',
-                         'id': 'site_2_sample_1', 'status': 'error',
-                         'error': 'Meeko preparation failed'},
-                    ])
+            def write_results(command, **kwargs):
+                self.assertEqual(command[0], '/fake/InterfaceAnalyzer')
+                self.assertEqual(command[command.index('-score:weights') + 1],
+                                 str(Path('weights/optimized_rosetta_26_terms.wts').resolve()))
+                self.assertEqual(command[command.index('-pack_input') + 1], 'false')
+                self.assertEqual(command[command.index('-pack_separated') + 1], 'false')
+                self.assertEqual(kwargs['timeout'], 1800)
+                pdb = Path(command[command.index('-s') + 1])
+                expected_interface = 'A_B' if pdb == structures[0] else 'AB_C'
+                self.assertEqual(command[command.index('-interface') + 1],
+                                 expected_interface)
+                if pdb == structures[3]:
+                    return SimpleNamespace(returncode=1, stdout='', stderr='bad residue')
+                score = -8.0 if pdb == structures[2] else -4.0
+                output = Path(command[command.index('-out:file:score_only') + 1])
+                output.write_text('SCORE: dG_separated dSASA_int description\n'
+                                  f'SCORE: {score} 120.0 test\n')
+                return SimpleNamespace(returncode=0, stdout='ok', stderr='')
 
-            with patch('allopep.subprocess.run', side_effect=write_results) as run:
+            with patch('rosetta_scoring.subprocess.run', side_effect=write_results) as run:
                 ranked = rank_pepglad_outputs(
-                    valid, root, 'target', box_padding=6,
-                    hydrogen_policy='rebuild')
+                    valid, root, 'target', '/fake/InterfaceAnalyzer')
             self.assertEqual([(r['rank'], r['site'], r['sample']) for r in ranked],
                              [(1, 2, 0), (2, 1, 0)])
-            self.assertEqual([r['vina_score_kcal_mol'] for r in ranked],
+            self.assertEqual([r['rosetta_dG_separated'] for r in ranked],
                              [-8.0, -4.0])
-            self.assertEqual(run.call_count, 1)
-            self.assertIn('rebuild', run.call_args.args[0])
-            with (root / 'target_vina_ranked.csv').open(newline='') as handle:
+            self.assertEqual(run.call_count, 3)
+            with (root / 'target_rosetta_manifest.csv').open(newline='') as handle:
+                jobs = list(csv.DictReader(handle))
+            self.assertEqual([job['id'] for job in jobs],
+                             ['site_1_sample_0', 'site_2_sample_0',
+                              'site_2_sample_1'])
+            with (root / 'target_rosetta_ranked.csv').open(newline='') as handle:
                 csv_rows = list(csv.DictReader(handle))
             self.assertEqual([row['sample'] for row in csv_rows], ['0', '0'])
             self.assertEqual([row['site'] for row in csv_rows], ['2', '1'])
-            self.assertEqual(csv_rows[0]['vina_hydrogen_policy'], 'rebuild')
-            with (root / 'target_vina_results.csv').open(newline='') as handle:
+            with (root / 'target_rosetta_results.csv').open(newline='') as handle:
                 results = list(csv.DictReader(handle))
             self.assertEqual([row['status'] for row in results],
                              ['ok', 'ok', 'error'])
+            self.assertIn('bad residue', results[2]['error'])
+            self.assertEqual(results[1]['rosetta_dSASA_int'], '120.0')
+            self.assertEqual(results[1]['rosetta_binary'], '/fake/InterfaceAnalyzer')
+            self.assertEqual(results[1]['weights_sha256'],
+                             'e193a7acc0cfe0918a15662cac9d021f232797da81d57aa89e6a1c6005983044')
+            self.assertTrue(Path(results[1]['scorefile']).is_file())
+            self.assertTrue(Path(results[1]['log_file']).is_file())
 
-    def test_all_vina_failures_keep_diagnostics_and_stop_ranking(self):
+    def test_all_rosetta_failures_keep_diagnostics_and_stop_ranking(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             pdb = root / 'target_0.pdb'
+            pdb.write_text('ATOM      1  CA  ALA A   1      0.000   0.000   0.000\n'
+                           'ATOM      2  CA  ALA B   1      0.000   0.000   0.000\n')
 
-            def write_failure(command, check):
-                output = Path(command[command.index('--output') + 1])
-                output.write_text(
-                    'protocol_id,id,status,error\n'
-                    'rigid_meeko_vina_residue_sum_v1,'
-                    'site_1_sample_0,error,Meeko preparation failed\n',
-                    encoding='utf-8')
-
-            with patch('allopep.subprocess.run', side_effect=write_failure), \
-                 self.assertRaisesRegex(RuntimeError, 'All 1 Vina scoring jobs failed'):
+            with patch('rosetta_scoring.subprocess.run', return_value=SimpleNamespace(
+                    returncode=1, stdout='', stderr='Rosetta failed')), \
+                 self.assertRaisesRegex(RuntimeError, 'All 1 Rosetta scoring jobs failed'):
                 rank_pepglad_outputs(
-                    [design(pdb)], root, 'target')
-            self.assertTrue((root / 'target_vina_results.csv').is_file())
-            self.assertFalse((root / 'target_vina_ranked.csv').exists())
+                    [design(pdb)], root, 'target', '/fake/InterfaceAnalyzer')
+            self.assertTrue((root / 'target_rosetta_results.csv').is_file())
+            self.assertFalse((root / 'target_rosetta_ranked.csv').exists())
 
-    def test_vina_results_without_protocol_are_rejected(self):
+    def test_stale_scorefile_is_not_reused(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
+            pdb = root / 'target_0.pdb'
+            pdb.write_text('ATOM      1  CA  ALA A   1      0.000   0.000   0.000\n'
+                           'ATOM      2  CA  ALA B   1      0.000   0.000   0.000\n')
+            run_dir = root / 'rosetta_runs' / 'site_1_sample_0'
+            run_dir.mkdir(parents=True)
+            (run_dir / 'interface.sc').write_text(
+                'SCORE: dG_separated description\nSCORE: -5.64 old\n')
+            (root / 'target_rosetta_ranked.csv').write_text('old rank\n')
 
-            def write_legacy(command, check):
-                output = Path(command[command.index('--output') + 1])
-                output.write_text(
-                    'id,status,score_total\nsite_1_sample_0,ok,-5.64\n',
-                    encoding='utf-8')
+            with patch('rosetta_scoring.subprocess.run', return_value=SimpleNamespace(
+                    returncode=0, stdout='', stderr='')), \
+                 self.assertRaisesRegex(RuntimeError, 'All 1 Rosetta scoring jobs failed'):
+                rank_pepglad_outputs([design(pdb)], root, 'target',
+                                     '/fake/InterfaceAnalyzer')
+            self.assertFalse((run_dir / 'interface.sc').exists())
+            self.assertFalse((root / 'target_rosetta_ranked.csv').exists())
+            with (root / 'target_rosetta_results.csv').open(newline='') as handle:
+                result = next(csv.DictReader(handle))
+            self.assertIn('scorefile missing', result['error'])
 
-            with patch('allopep.subprocess.run', side_effect=write_legacy), \
-                 self.assertRaisesRegex(RuntimeError, 'Unsupported Vina scoring protocol'):
-                rank_pepglad_outputs([design(root / 'target_0.pdb')], root,
-                                     'target')
+    def test_scorefile_rejects_nonfinite_interface_energy(self):
+        with tempfile.TemporaryDirectory() as directory:
+            scorefile = Path(directory) / 'interface.sc'
+            scorefile.write_text('SCORE: dG_separated description\n'
+                                 'SCORE: nan test\n')
+            with self.assertRaisesRegex(ValueError, 'Non-finite dG_separated'):
+                parse_scorefile(scorefile)
+
+    def test_missing_rosetta_binary_is_reported(self):
+        with patch('rosetta_scoring.shutil.which', return_value=None), \
+             self.assertRaisesRegex(FileNotFoundError, 'InterfaceAnalyzer is not on PATH'):
+            resolve_rosetta_binary()
+
+    def test_main_checks_rosetta_before_preparing_input(self):
+        with patch('allopep.resolve_rosetta_binary', side_effect=FileNotFoundError(
+                'InterfaceAnalyzer missing')), \
+             patch('allopep.prepare_input_pdb') as prepare, \
+             self.assertRaisesRegex(FileNotFoundError, 'InterfaceAnalyzer missing'):
+            main(['target.pdb'])
+        prepare.assert_not_called()
+
+    def test_chain_mismatch_records_error_without_running_rosetta(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            pdb = root / 'target_0.pdb'
+            pdb.write_text('ATOM      1  CA  ALA A   1      0.000   0.000   0.000\n')
+            with patch('rosetta_scoring.subprocess.run') as run, \
+                 self.assertRaisesRegex(RuntimeError, 'All 1 Rosetta scoring jobs failed'):
+                rank_pepglad_outputs([design(pdb)], root, 'target',
+                                     '/fake/InterfaceAnalyzer')
+            run.assert_not_called()
+            with (root / 'target_rosetta_results.csv').open(newline='') as handle:
+                result = next(csv.DictReader(handle))
+            self.assertIn('PDB chains', result['error'])
+            self.assertIn('PDB chains', Path(result['log_file']).read_text())
 
     def test_validation_manifest_uses_pepglad_summary_and_input(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -285,7 +328,7 @@ class VinaRankingTests(unittest.TestCase):
     def test_invalid_cli_options_fail_before_pipeline_stages(self):
         for option in ('--length_min 0', '--length_min 8 --length_max 7',
                        '--num_samples 0', '--score-guidance-strength nan',
-                       '--vina-box-padding inf', '--peptide-chain AA'):
+                       '--peptide-chain AA'):
             with self.subTest(option=option), \
                  patch('allopep.prepare_input_pdb') as prepare:
                 with self.assertRaises(ValueError):

@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 from allopep import (find_existing_pepglad_outputs, prepare_input_pdb,
                      main, rank_pepglad_outputs, run_openstructure_validation,
-                     run_pepglad, write_pymol_script)
+                     run_pepglad, write_pymol_session)
 from pepglad_outputs import DesignOutput, load_design_outputs
 from rosetta_scoring import parse_scorefile, resolve_rosetta_binary
 from run_gaps import GuidanceContext, ScoredResidue
@@ -23,16 +23,22 @@ def design(path, site=1, sample=0, sequence='LHLKA', peptide_chain='B',
 
 
 class RosettaRankingTests(unittest.TestCase):
-    def test_pymol_script_aligns_every_complex_to_input_receptor(self):
+    def test_pymol_session_shows_gaps_receptor_and_pepglad_peptides(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / 'target output'
             root.mkdir()
-            input_pdb = root / 'target.pdb'
-            input_pdb.touch()
+            gaps_pdb = root / 'target_GAPS_output.pdb'
+            gaps_pdb.touch()
             generated = []
-            for site in (1, 2):
+            for site in (1, 2, 3, 4):
                 site_dir = root / f'target_allosteric_site_{site}_codesign'
                 site_dir.mkdir()
+                pocket_dir = root / 'target_allosteric_sites'
+                pocket_dir.mkdir(exist_ok=True)
+                (pocket_dir / f'target_allosteric_site_{site}.json').write_text(
+                    json.dumps([['A', [10, ' '], 0.8],
+                                ['A', [11, 'A'], 0.7],
+                                ['B', [20, ' '], 0.6]]), encoding='utf-8')
                 model = site_dir / 'target_0.pdb'
                 model.touch()
                 (site_dir / 'summary.jsonl').write_text(json.dumps({
@@ -41,24 +47,93 @@ class RosettaRankingTests(unittest.TestCase):
                 }) + '\n', encoding='utf-8')
                 generated.append(design(model, site, peptide_chain='C',
                                         receptor_chains=('A', 'B')))
+            second_model = root / 'target_allosteric_site_1_codesign' / 'target_1.pdb'
+            second_model.touch()
+            generated.append(design(second_model, 1, sample=1,
+                                    peptide_chain='C', receptor_chains=('A', 'B')))
 
-            script = write_pymol_script(generated, input_pdb, root, 'target')
-            content = script.read_text(encoding='utf-8')
-            self.assertEqual(script.name, 'target_pepglad_aligned.pml')
-            self.assertIn(f'load {json.dumps(str(input_pdb.resolve()))}, '
-                          'allopep_target_input', content)
+            legacy_script = root / 'target_pepglad_aligned.pml'
+            legacy_script.touch()
+            scripts = []
+
+            def build_session(command, **kwargs):
+                self.assertEqual(command[:2], ['pymol', '-cqQ'])
+                self.assertTrue(kwargs['capture_output'])
+                content = (kwargs['cwd'] / command[2]).read_text(encoding='utf-8')
+                scripts.append(content)
+                self.assertEqual(content.splitlines()[-1], 'save session.pse')
+                session = kwargs['cwd'] / 'session.pse'
+                session.write_bytes(b'PyMOL session')
+                return SimpleNamespace(returncode=0, stderr='', stdout='')
+
+            with patch('allopep.subprocess.run', side_effect=build_session):
+                session = write_pymol_session(generated, root, 'target')
+            content = scripts[0]
+            self.assertEqual(session.name, 'target_pepglad_aligned.pse')
+            self.assertEqual(session.read_bytes(), b'PyMOL session')
+            self.assertFalse(legacy_script.exists())
+            self.assertFalse(list(root.glob('**/*.pml')))
+            self.assertIn(f'load {json.dumps(str(gaps_pdb.resolve()))}, '
+                          'target', content)
+            self.assertIn('hide everything, all', content)
+            self.assertIn('show cartoon, target', content)
+            self.assertIn('spectrum b, blue_white_red, target '
+                          'and polymer.protein, minimum=0, maximum=1', content)
+            site_colors = {1: 'green', 2: 'cyan',
+                           3: 'lightmagenta', 4: 'yellow'}
             for output in generated:
-                name = f'allopep_target_site_{output.site}_sample_0'
+                name = f'site_{output.site}_peptide_{output.sample + 1}'
                 self.assertIn(f'load {json.dumps(output.resolved_path)}, {name}',
                               content)
                 self.assertIn(
                     f'align ({name} and name CA and (chain A or chain B)), '
-                    '(allopep_target_input and name CA and (chain A or chain B)), '
+                    '(target and name CA and (chain A or chain B)), '
                     'cycles=0', content)
-                self.assertIn(f'show sticks, allopep_target_site_{site}_* '
+                self.assertIn(f'remove {name} and not chain C', content)
+                self.assertIn(f'show sticks, site_{output.site}_peptide_* '
                               'and chain C', content)
-            self.assertEqual(content.count('\nalign '), 2)
+                self.assertIn(
+                    f'color {site_colors[output.site]}, '
+                    f'site_{output.site}_peptide_* and chain C', content)
+                self.assertIn(
+                    f'color atomic, site_{output.site}_peptide_* '
+                    'and chain C and not elem C', content)
+                surface = f'site_{output.site}'
+                self.assertIn(f'create {surface}, target '
+                              'and polymer.protein', content)
+                self.assertIn(
+                    f'show surface, {surface} and '
+                    '((chain A and resi 10+11A) or (chain B and resi 20))',
+                    content)
+                self.assertIn(f'set transparency, 0.4, {surface}', content)
+                self.assertIn(f'color {site_colors[output.site]}, {surface}',
+                              content)
+                self.assertIn(f'group sites, {surface}', content)
+                self.assertNotIn(f'site_{output.site}_surface', content)
+                self.assertIn(
+                    f'group site_{output.site}_peptides, '
+                    f'site_{output.site}_peptide_*',
+                    content)
+                self.assertNotIn(
+                    f'group sites, site_{output.site}_peptides\n', content)
+                self.assertIn(f'group peptides, site_{output.site}_peptides',
+                              content)
+            self.assertNotIn('allopep_', content)
+            self.assertEqual(content.count('\nalign '), 5)
             self.assertNotIn('\npython\n', content)
+
+    def test_pymol_failure_preserves_existing_session(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'target_GAPS_output.pdb').touch()
+            session = root / 'target_pepglad_aligned.pse'
+            session.write_bytes(b'previous session')
+            with patch('allopep.subprocess.run', return_value=SimpleNamespace(
+                    returncode=1, stderr='PyMOL failed', stdout='')):
+                with self.assertRaisesRegex(RuntimeError, 'PyMOL failed'):
+                    write_pymol_session([], root, 'target')
+            self.assertEqual(session.read_bytes(), b'previous session')
+            self.assertFalse(list(root.glob('.allopep-pymol-*')))
 
     def test_validation_reuses_saved_input_pdb(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -15,6 +15,7 @@ dependencies:
   - openstructure=2.11.1
   - pandas=2.3.3
   - psutil>=5.9,<8
+  - pymol-open-source=3.1.0
   - rdkit>=2024.09,<2027
   - scipy=1.13.1
   - prody       # for Normal Mode Analysis

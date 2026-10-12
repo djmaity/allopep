@@ -2,14 +2,38 @@
 
 import csv
 import json
+import os
 import tempfile
+import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-from pepglad_validation import FIELDS, validation_reasons, write_reports
+from pepglad_validation import (FIELDS, validate_manifest, validation_reasons,
+                                write_reports)
+
+
+def _probe_validation(entry, peptide_chain):
+    time.sleep(0.05)
+    if entry.get('fail'):
+        raise ValueError('sample failure')
+    return {'path': entry['path'], 'status': 'valid', 'pid': os.getpid()}, {}
 
 
 class ValidationPolicyTests(unittest.TestCase):
+    def test_parallel_validation_runs_in_multiple_processes_and_keeps_order(self):
+        entries = [{'path': f'sample_{index}.pdb', 'site': 1, 'sample': index,
+                    'fail': index == 2} for index in range(4)]
+        with patch('pepglad_validation.validate_structure', _probe_validation):
+            reports = list(validate_manifest(entries, workers=2))
+        rows = [row for row, _ in reports]
+        self.assertEqual([row['path'] for row in rows],
+                         [entry['path'] for entry in entries])
+        self.assertEqual([row['status'] for row in rows],
+                         ['valid', 'valid', 'error', 'valid'])
+        self.assertIn('ValueError: sample failure', rows[2]['reasons'])
+        self.assertEqual(len({row['pid'] for row in rows if row['status'] == 'valid'}), 2)
+
     def test_rejection_reasons_preserve_policy_and_order(self):
         metrics = {field: 0 for field in FIELDS}
         metrics['contact_residues_5a'] = 1

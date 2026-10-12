@@ -11,12 +11,15 @@ import csv
 import hashlib
 import json
 import math
+import multiprocessing
 import os
 import sys
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
 import numpy as np
 import ost
+import psutil
 from iotbx import pdb
 from mmtbx.validation import ramalyze, rotalyze
 from ost import conop, io
@@ -74,10 +77,17 @@ def _stereochemistry_details(entity, peptide_chain):
             atoms = (violation.a1, violation.a2)
             if kind == 'bad_angles':
                 atoms += (violation.a3,)
+            record = violation.ToJSON()
+            # Both ends of a bond, clash, or angle are interchangeable.
+            # OpenStructure may enumerate them in either direction.
+            end = 'a3' if kind == 'bad_angles' else 'a2'
+            if record['a1'] > record[end]:
+                record['a1'], record[end] = record[end], record['a1']
             details[kind].append({
                 'scope': _violation_scope(atoms, peptide_chain),
-                **violation.ToJSON(),
+                **record,
             })
+        details[kind].sort(key=lambda item: json.dumps(item, sort_keys=True))
     return details
 
 
@@ -325,17 +335,41 @@ def validate_structure(entry, peptide_chain=None):
     return result, details
 
 
-def validate_manifest(entries, peptide_chain=None):
-    """Keep per-complex failures in the report instead of aborting the batch."""
-    for entry in entries:
-        try:
-            result, details = validate_structure(entry, peptide_chain)
-        except Exception as exc:
-            result = {'path': entry['path'], 'site': entry['site'],
-                      'sample': entry['sample'], 'status': 'error',
-                      'reasons': f'{type(exc).__name__}: {exc}'}
-            details = {}
-        yield result, details
+def _validate_entry(task):
+    """Keep a failed complex in the report instead of aborting the batch."""
+    entry, peptide_chain = task
+    try:
+        return validate_structure(entry, peptide_chain)
+    except Exception as exc:
+        result = {'path': entry['path'], 'site': entry['site'],
+                  'sample': entry['sample'], 'status': 'error',
+                  'reasons': f'{type(exc).__name__}: {exc}'}
+        return result, {}
+
+
+def validation_worker_count(entry_count):
+    """Use available cores while reserving memory for each complex."""
+    if entry_count < 2:
+        return 1
+    available_cpus = (len(os.sched_getaffinity(0)) if hasattr(os, 'sched_getaffinity')
+                      else os.cpu_count() or 1)
+    memory_workers = max(1, psutil.virtual_memory().available // (1024 ** 3))
+    return min(entry_count, available_cpus, memory_workers)
+
+
+def validate_manifest(entries, peptide_chain=None, workers=None):
+    """Validate independent complexes in parallel, preserving manifest order."""
+    entries = list(entries)
+    workers = validation_worker_count(len(entries)) if workers is None else workers
+    tasks = ((entry, peptide_chain) for entry in entries)
+    if workers == 1:
+        yield from map(_validate_entry, tasks)
+    else:
+        # ost runs this script via exec(...), so fork retains its loaded native
+        # modules and avoids trying to import the script as __main__ in a child.
+        with ProcessPoolExecutor(max_workers=workers,
+                                 mp_context=multiprocessing.get_context('fork')) as pool:
+            yield from pool.map(_validate_entry, tasks)
 
 
 def write_reports(reports, csv_path, jsonl_path):
@@ -354,14 +388,16 @@ def write_reports(reports, csv_path, jsonl_path):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--manifest', required=True, type=Path)
-    parser.add_argument('--csv', required=True, type=Path)
-    parser.add_argument('--jsonl', required=True, type=Path)
-    parser.add_argument('--peptide-chain')
+    parser.add_argument('-m', '--manifest', required=True, type=Path)
+    parser.add_argument('-c', '--csv', required=True, type=Path)
+    parser.add_argument('-j', '--jsonl', required=True, type=Path)
+    parser.add_argument('-p', '--peptide-chain')
     args = parser.parse_args()
     manifest = json.loads(args.manifest.read_text(encoding='utf-8'))
+    workers = validation_worker_count(len(manifest))
+    print(f'Validating {len(manifest)} complexes with {workers} worker(s)')
     rows = write_reports(
-        validate_manifest(manifest, args.peptide_chain), args.csv, args.jsonl)
+        validate_manifest(manifest, args.peptide_chain, workers), args.csv, args.jsonl)
     print(f'OpenStructure checked {len(rows)} complexes: '
           f'{sum(r["status"] == "valid" for r in rows)} valid, '
           f'{sum(r["status"] == "invalid" for r in rows)} invalid, '

@@ -16,11 +16,11 @@ artifact formats.
 | `process_control.py` | Logged subprocess execution and deadline/process-tree handling. |
 | `pepglad_outputs.py` | Summary parsing, chain/sequence metadata, round IDs, and deletion journals. |
 | `pepglad_validation.py` | OpenStructure/CCTBX measurements, policy, parallel workers, and reports. |
-| `rosetta_scoring.py` | External InterfaceAnalyzer invocation, weight verification, and ranked CSVs. |
+| `vina_ranking.py` | Valid-design submission, diagnostics, and Vina ranked CSVs. |
 | `recover_pepglad_relaxation.py` | Inspection and optional recovery of interrupted relaxation. |
 | `install.sh`, `environment.yml` | Pinned dependency setup and the main environment declaration. |
 | `patches/` | Changes applied to the pinned external checkouts. |
-| `weights/` | The checksum-verified fitted Rosetta weight file. |
+| `vina_scoring/` | Canonical rigid-pose Meeko/Vina scorer, also imported by the comparison repository. |
 | `tests/` | Focused regression tests and fixtures. |
 | `docs/`, `mkdocs.yml` | This documentation site. |
 
@@ -69,7 +69,7 @@ patch. Preserve unrelated local changes and expensive experiment artifacts.
 ## Build and preview the documentation
 
 The documentation needs only a separate Python environment; it does not need
-GAPS, PepGLAD, Rosetta, or the scientific Conda dependencies:
+GAPS, PepGLAD, Vina, or the scientific Conda dependencies:
 
 ```bash
 python -m venv .venv-docs
@@ -105,7 +105,7 @@ Update related documentation together when behavior changes:
 | Pocket thresholds, grouping, or limits | [Pocket selection](pocket-selection.md), [Scientific interpretation](scientific-scope.md) |
 | Budgets, round layout, resume, or cleanup | [Sampling](sampling-and-resume.md), [Outputs](outputs.md), [Troubleshooting](troubleshooting.md) |
 | Validation thresholds or rejection policy | [Validation](validation.md), report interpretation, relevant tests |
-| Scoring weights or protocol | [Rosetta ranking](scoring.md), weight checksum/provenance, relevant tests |
+| Scoring preparation or protocol | [Vina ranking](scoring.md), source provenance, relevant tests |
 | Environment or external dependency pins | [Installation](installation.md), installer, environment declaration |
 
 Use `git diff --check --` with the changed paths for whitespace validation.
@@ -118,6 +118,6 @@ separately from documentation edits.
 - [PepGLAD source](https://github.com/THUNLP-MT/PepGLAD)
 - [OpenStructure documentation](https://openstructure.org/docs/)
 - [CCTBX source](https://github.com/cctbx/cctbx_project)
-- [Rosetta documentation](https://docs.rosettacommons.org/docs/latest/Home)
+- [AutoDock Vina documentation](https://autodock-vina.readthedocs.io/)
 - [MkDocs configuration](https://www.mkdocs.org/user-guide/configuration/)
 - [Material for MkDocs](https://squidfunk.github.io/mkdocs-material/)

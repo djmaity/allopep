@@ -44,10 +44,9 @@ python allopep.py PDB_FILE [OPTIONS]
 | `--max_num_peptides` | Calculated | Absolute per-site attempt cap; overrides the multiplier and must be at least `-n`. |
 | `--round-timeout-seconds` | `3600` | Shared deadline for one round's generation, relaxation, and validation. |
 | `-c`, `--peptide-chain` | From summary | Known peptide chain ID; must agree with PepGLAD's summary. One alphanumeric character. |
-| `-v`, `--validate-existing` | Off | Validate saved available complexes without generation or Rosetta scoring. |
+| `-v`, `--validate-existing` | Off | Validate saved available complexes without generation or Vina scoring. |
 | `-R`, `--rank-existing` | Off | Validate and rank saved available complexes without generation. |
 | `--resume` | Off | Reuse compatible saved rounds and continue incomplete sites. |
-| `--rosetta-bin` | Search `PATH` | Path to an executable Rosetta InterfaceAnalyzer binary. |
 | `-h`, `--help` | — | Display help and exit. |
 
 `--validate-existing`, `--rank-existing`, and `--resume` are mutually exclusive.
@@ -105,9 +104,9 @@ documented in round reports; their coordinates cannot be rechecked. See
 | --- | --- |
 | `0` | Normal completion. For sampling, every site reached its valid-structure target. Validation-only can finish normally with zero passing structures; inspect the reports. |
 | `2` | At least one site exhausted its attempt cap before reaching the target. Partial valid results are retained and ranked when available. |
-| `1` | Operational failure, such as a timeout, incompatible resume state, failed dependency, or all Rosetta jobs failing. |
+| `1` | Operational failure, such as a timeout, incompatible resume state, failed dependency, or all Vina jobs failing. |
 
-A partial Rosetta scoring failure is recorded in the results CSV and does not
+A partial Vina scoring failure is recorded in the results CSV and does not
 cause replacement sampling. Exit status alone does not give the number of
 valid structures or successful scores.
 

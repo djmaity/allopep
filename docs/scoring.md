@@ -1,80 +1,83 @@
-# Rosetta ranking
+# Vina ranking
 
-AlloPep ranks selected physically valid complexes using an external Rosetta
-InterfaceAnalyzer executable. **Lower `rosetta_dG_separated` ranks first.**
-Validation status is established before scoring.
+AlloPep ranks selected physically valid complexes with its bundled rigid-pose
+Meeko/Vina scorer. **Lower `score_total` ranks first.** Validation establishes
+eligibility before scoring; site and per-site sample IDs break score ties.
 
 ## Scoring protocol
 
-The scorer constructs an explicit receptor–peptide interface from PepGLAD's
-metadata. Receptor chains A and B with peptide chain C, for example, become
-`AB_C`. Coordinate chain IDs must match those expected from the summary.
+The scorer selects explicit receptor and peptide chains from PepGLAD's
+metadata. Coordinate chain IDs must match the summary. Meeko prepares both
+components as rigid PDBQT structures, preserving peptide residues, heavy
+atoms, and their coordinates. Missing templates, preparation warnings, or
+changed/lost heavy atoms fail the complete pose.
 
-For each complex, the command enables interface shape complementarity and
-packing statistics, uses a constant random seed of 42, and specifies:
+The calculation scores the saved coordinates without docking or optimization.
+It computes one complete set of receptor affinity maps, scores each peptide
+residue against those maps, and sums raw interaction energies before Vina's
+three-decimal rounding. The peptide has zero active torsions. This avoids
+Vina's redundant quadratic allocation for a complete rigid peptide.
 
-```text
--pack_input false
--pack_separated false
-```
-
-The calculation does not relax the complex or repack its bound or separated
-states. It scores the saved coordinates after PepGLAD's earlier preparation
-and relaxation. Each design has an isolated run directory and a scoring
-timeout of 1,800 seconds in the current implementation; the top-level CLI does
-not expose that timeout.
-
-## Weight provenance
-
-| Property | Value |
+| Setting | Value |
 | --- | --- |
-| Bundled weights | `weights/optimized_rosetta_26_terms.wts` |
-| Selected fit | 26-term ridge weights |
-| Origin | `compare_docking_scoring_function/output/rosetta_affinity/optimized_rosetta_26_terms.wts` |
-| SHA-256 | `e193a7acc0cfe0918a15662cac9d021f232797da81d57aa89e6a1c6005983044` |
-| Ranking field | `rosetta_dG_separated` |
-| Ties | Site, then per-site sample ID. |
+| Protocol ID | `rigid_meeko_vina_residue_sum_v1` |
+| Meeko / Vina | `0.8.0` / `1.2.7` in the main environment |
+| Hydrogen policy | Keep input hydrogens |
+| Automatic box | Peptide bounds plus 5 Å on each side |
+| Grid spacing | 0.375 Å |
+| Intended pH provenance | 7.4; Meeko templates control protonation |
+| Receptor hetero residues | Excluded by default |
+| Peptide residues | All non-water residues, including supported caps/modifications |
+| Pipeline workers | One disposable scoring process at a time |
 
-The scorer verifies the bundled file's checksum. Changing the weights is a
-change to the scoring protocol and provenance contract; a silent replacement
-is rejected.
-
-The fitted score is an empirical ranking signal. Its name does not make it a
-measured binding free energy, an affinity estimate in kcal/mol, or a validated
-predictor for generated peptides. See [Scientific interpretation](scientific-scope.md).
+The scheduler reserves memory using the affinity-map box, with a default
+budget of 75% of available memory. This reservation is a scheduling estimate,
+not an operating-system memory limit.
 
 ## Results and failures
 
-Files are written under `output/structure_output/structure_rosetta_score/`:
+Reports are written under `output/structure_output/structure_vina_score/`:
 
 | File | Meaning |
 | --- | --- |
-| `structure_rosetta_manifest.csv` | Valid selected designs submitted for scoring, with chains, binary path, and weight checksum. |
-| `structure_rosetta_results.csv` | Every submitted design, with `status`, error text, available metrics, and raw artifact paths. |
-| `structure_rosetta_ranked.csv` | Only successfully scored designs, with rank starting at one. |
-| `rosetta_runs/site_N_sample_M/interface.sc` | Raw scorefile for a design. |
-| `rosetta_runs/site_N_sample_M/interface.log` | Process output and diagnostics. |
+| `structure_vina_manifest.csv` | Selected valid designs, chain IDs, input hashes, and preparation settings. |
+| `structure_vina_results.csv` | Every submitted design, including failures, all score components, normalized diagnostics, hashes, software versions, and errors. |
+| `structure_vina_ranked.csv` | Successful finite totals, ordered ascending, with rank starting at one. |
 
-A successful result requires a complete score row and a finite numeric
-`dG_separated`. Exit code zero without a scorefile is a scoring error. Failed
-jobs remain in the results CSV and are excluded from ranking; all scoring jobs
-failing causes an operational failure. Individual scoring failures do not
-trigger additional generation.
+Each scoring job runs in a disposable worker. Temporary prepared files are
+removed after scoring; diagnostics and provenance remain in the CSV reports.
+Failed jobs are excluded from ranking. All jobs failing causes an operational
+failure. Scoring errors do not trigger replacement generation. Reranking
+clears the previous Vina scoring reports before writing the current cohort.
 
 ## Rerank available complexes
 
 ```bash
 conda activate allopep
-python allopep.py input/structure.pdb --rank-existing \
-  --rosetta-bin /path/to/InterfaceAnalyzer
+python allopep.py input/structure.pdb --rank-existing
 ```
 
-This validates all available saved candidates and scores those passing the
-current gate. It can include valid extras retained from a final sampling round.
-It refreshes cumulative validation and scoring reports, so archive reports
-first when preserving a previous analysis. No new peptides are generated.
+This validates available saved candidates and scores those passing the gate.
+It can include valid extras retained from the final sampling round. It
+refreshes cumulative validation and scoring reports without generating
+peptides. Archive reports first when preserving a particular analysis.
+Earlier Rosetta reports remain historical artifacts; compatible saved sampling
+rounds can be resumed with the new scorer.
 
-Old Vina directories are historical artifacts; the current pipeline does not
-convert them into Rosetta results.
+## Source and interpretation
 
-Implementation: `rosetta_scoring.py` and the ranking branch of `allopep.py`.
+`vina_scoring/` is the canonical source, imported directly by the comparison
+repository through its `run_scorers.vina_backend` bridge. It was copied from
+`peptide-vina-scoring` revision
+`4a97b5ce7c9df8600d63fc2b135efda8be9cc1db`, retaining the scoring protocol and
+result schema. No separate scorer installation is required. The standalone
+CLI is available from AlloPep's root:
+
+```bash
+python -m vina_scoring.vina_score --help
+```
+
+Vina totals have nominal kcal/mol units. They are empirical ranking signals;
+they do not establish experimental affinity, allosteric activity, or dynamic
+stability. Compare scores prepared with the same protocol. See
+[Scientific interpretation](scientific-scope.md).

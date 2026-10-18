@@ -33,17 +33,13 @@ output/structure_output/
 │           ├── structure_pepglad_validation.jsonl
 │           └── removed_structures.json
 ├── structure_pepglad_aligned.pse
-└── structure_rosetta_score/
+└── structure_vina_score/
     ├── structure_pepglad_validation_manifest.json
     ├── structure_pepglad_validation.csv
     ├── structure_pepglad_validation.jsonl
-    ├── structure_rosetta_manifest.csv
-    ├── structure_rosetta_results.csv
-    ├── structure_rosetta_ranked.csv
-    └── rosetta_runs/
-        └── site_1_sample_0/
-            ├── interface.sc
-            └── interface.log
+    ├── structure_vina_manifest.csv
+    ├── structure_vina_results.csv
+    └── structure_vina_ranked.csv
 ```
 
 ## Which artifact answers which question?
@@ -57,9 +53,9 @@ output/structure_output/
 | Did generation or relaxation fail? | Round `summary.jsonl`, `pepglad.log`, and any per-design error records. |
 | Why is a previously rejected PDB absent? | The round's `removed_structures.json` and rejection reports. |
 | Which structures were selected? | Each site's `selected` entries in the sampling summary. |
-| Which structures were scored? | `structure_rosetta_manifest.csv`. |
-| Which score should determine rank? | `rosetta_dG_separated` in `structure_rosetta_ranked.csv`. |
-| Why is a valid structure absent from ranking? | Selection limit, then `structure_rosetta_results.csv` and the design's log. |
+| Which structures were scored? | `structure_vina_manifest.csv`. |
+| Which score should determine rank? | `score_total` in `structure_vina_ranked.csv`. |
+| Why is a valid structure absent from ranking? | Selection limit, then `structure_vina_results.csv` and its per-design error fields. |
 
 ## Sampling summary
 

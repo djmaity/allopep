@@ -2,7 +2,7 @@
 
 AlloPep samples toward a target number of **physically valid structures at each
 site**. The target is distinct from the number of candidates attempted or the
-number of successful Rosetta scores.
+number of successful Vina scores.
 
 ## Adaptive rounds
 
@@ -59,7 +59,7 @@ The sampling summary records these failure categories:
 | `validation_error` | A usable complex could not be checked successfully. |
 | `unreported` | Reserved attempts have no generation summary record. |
 
-Rosetta errors occur after selection and do not trigger replacement sampling.
+Vina errors occur after selection and do not trigger replacement sampling.
 
 ## Resume compatibility
 
@@ -118,7 +118,7 @@ with `--resume` and the original settings.
 `--round-timeout-seconds` covers generation, relaxation, and validation together
 for one new round. On timeout, AlloPep terminates the subprocess and its
 descendants, saves progress, and exits with an operational error. This is
-separate from Rosetta's per-design scoring timeout.
+separate from Vina scoring, which runs after selection in disposable workers.
 
 An advisory `.sampling.lock` prevents two sampling controllers from using the
 same output directory simultaneously. A leftover lock file is not evidence of

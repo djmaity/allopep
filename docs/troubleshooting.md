@@ -8,7 +8,7 @@ results CSV and the design-specific `interface.log`.
 
 | Symptom | Action |
 | --- | --- |
-| `InterfaceAnalyzer is not on PATH` | Install Rosetta separately, activate the intended environment, or pass `--rosetta-bin /full/path/to/executable`. Validation-only does not require Rosetta. |
+| `Vina scoring dependencies are unavailable` | Activate `allopep` and run `conda env update -n allopep -f environment.yml`; check that Meeko's `mk_prepare_receptor.py` is available. Validation-only skips scorer checks. |
 | `OpenStructure ost executable not found` | Run the CLI from the `allopep` environment and check its installation. |
 | Missing `ost`, `mmtbx`, `freesasa`, or `pymol` | Use `conda run -n allopep`; rerun the installer to apply the declared dependencies if needed. |
 | Missing Ramachandran/rotamer data | Check `chem_data` in `allopep`, then rebuild the rotarama cache. |
@@ -90,16 +90,17 @@ Only one sampling controller can use an output directory at a time. For
 `Another sampling process is using ...`, check for the actual live process;
 deleting `.sampling.lock` does not safely resolve a held advisory lock.
 
-## Rosetta errors or missing ranked rows
+## Vina errors or missing ranked rows
 
-Inspect `structure_rosetta_results.csv`, then the referenced scorefile and log.
-Common causes include a wrong/nonexecutable binary, chain mismatch, timeout,
-an absent scorefile despite exit status zero, or non-finite `dG_separated`.
+Inspect the `error` and `warnings` fields in `structure_vina_results.csv`.
+Common causes include chain mismatch, missing or unsupported residue templates,
+Meeko preparation warnings, changed or lost heavy atoms, insufficient worker
+memory, or non-finite `score_total`. Preparation errors fail the complete pose.
 
 The ranked CSV includes only successful jobs. The sampling target counts valid
 structures, so a scoring error does not schedule a replacement peptide. If a
 valid extra was never selected during sampling, it also need not appear in the
-manifest. See [Rosetta ranking](scoring.md).
+manifest. See [Vina ranking](scoring.md).
 
 ## PyMOL launch or session failure
 

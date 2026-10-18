@@ -1,7 +1,7 @@
 # Structure validation
 
 Every usable PepGLAD complex must pass AlloPep's OpenStructure and CCTBX
-physical-validity policy before it can be selected for Rosetta ranking.
+physical-validity policy before it can be selected for Vina ranking.
 **Any one of the 16 rejection reasons below makes a checked structure invalid.**
 There is no allowance for a percentage of outliers.
 
@@ -83,8 +83,8 @@ audit.
 
 CCTBX `ramalyze` and `rotalyze` supply their outlier classifications. AlloPep
 filters their results to the peptide chain and records the number evaluated.
-It does not replace those classifications with Rosetta energy proxies or add
-its own outlier-percentage threshold.
+It uses those classifications directly and adds no outlier-percentage
+threshold.
 
 For ω normalized to `[-180°, 180°)`, planarity deviation is the smaller distance
 to 0° or ±180°. A deviation exactly equal to 30° does not trigger the twisted
@@ -137,7 +137,7 @@ can prevent the validation subprocess from running at all.
 ## Inspect the reports
 
 For an input named `structure.pdb`, cumulative reports are under
-`output/structure_output/structure_rosetta_score/`:
+`output/structure_output/structure_vina_score/`:
 
 | File | Contents |
 | --- | --- |
@@ -156,7 +156,7 @@ import csv
 from collections import Counter
 from pathlib import Path
 
-path = Path("output/structure_output/structure_rosetta_score/"
+path = Path("output/structure_output/structure_vina_score/"
             "structure_pepglad_validation.csv")
 with path.open(newline="") as handle:
     rows = list(csv.DictReader(handle))

@@ -1,5 +1,5 @@
 site_name: AlloPep
-site_description: GAPS-guided peptide design, physical validation, and Rosetta ranking.
+site_description: GAPS-guided peptide design, physical validation, and Vina ranking.
 repo_url: https://github.com/djmaity/allopep
 repo_name: djmaity/allopep
 edit_uri: ""
@@ -62,7 +62,7 @@ nav:
       - Pocket selection: pocket-selection.md
       - Sampling and resume: sampling-and-resume.md
       - Structure validation: validation.md
-      - Rosetta ranking: scoring.md
+      - Vina ranking: scoring.md
   - Working with results:
       - Outputs and visualization: outputs.md
       - Troubleshooting: troubleshooting.md

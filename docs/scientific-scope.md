@@ -11,7 +11,7 @@ when choosing candidates or reporting results.
 | High GAPS residue or pocket score | The model prioritizes this receptor region under the current selector. | Experimental allosteric relevance and independence from model training data. |
 | Successful generation or OpenMM relaxation | A candidate was produced and processed. | Passing physical validation and any claim of stability. |
 | AlloPep `valid` status | The candidate passed the implemented physical checks. | Native pose accuracy, binding, function, comprehensive stereochemical assessment, and dynamics. |
-| Favorable fitted Rosetta interface score | The fixed-pose scorer ranks the candidate favorably among the scored cohort. | Calibrated affinity prediction and held-out performance on generated peptides. |
+| Favorable rigid-pose Vina total | The fixed-pose scorer ranks the candidate favorably among the scored cohort. | Calibrated affinity prediction and held-out performance on generated peptides. |
 | Native-pocket recovery | A selected receptor set overlaps a specified native contact set under an explicit metric. | Allosteric activity, peptide design success, and generalization beyond the evaluation cohort. |
 
 ## Physical validity and repair

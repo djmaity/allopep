@@ -1,14 +1,14 @@
 # AlloPep
 
 AlloPep finds candidate allosteric sites with GAPS, designs peptides with
-PepGLAD, checks their structures, and ranks valid designs with Rosetta
-InterfaceAnalyzer.
+PepGLAD, checks their structures, and ranks valid designs with rigid-pose
+Vina scoring.
 
 ## Documentation
 
 The [documentation](docs/index.md) covers installation, command-line usage,
 pocket selection, resumable sampling, all 16 [structure-validation
-criteria](docs/validation.md), Rosetta ranking, outputs, and troubleshooting.
+criteria](docs/validation.md), Vina ranking, outputs, and troubleshooting.
 To preview the searchable MkDocs site locally:
 
 ```bash
@@ -39,11 +39,9 @@ builds the rotarama cache. The `allopep` environment includes PyMOL to build
 the saved visualization session. Rerun `bash install.sh` to complete an
 interrupted installation or update existing environments.
 
-Install Rosetta separately and make its `InterfaceAnalyzer` executable
-available on `PATH` when running the pipeline. Rosetta is not installed by
-`install.sh` or `environment.yml`. You can instead pass
-`--rosetta-bin /path/to/InterfaceAnalyzer` to use a specific executable.
-See the [Rosetta installation instructions](https://docs.rosettacommons.org/docs/latest/getting_started/Getting-Started).
+The Vina scorer is included in `vina_scoring/`. The `allopep` environment
+installs Meeko 0.8.0 and Vina 1.2.7 directly; no separate scorer package or
+checkout is needed to run AlloPep.
 
 ## Run
 
@@ -77,7 +75,7 @@ python allopep.py input/structure.pdb -n 10 --max_num_peptides 1000
 Every candidate consumes an attempt, including failed coordinates, failed
 relaxation, and rejected structures. Different poses with the same sequence
 count separately. Validity uses the existing OpenStructure/CCTBX gate;
-Rosetta scoring failures do not trigger replacement sampling.
+Vina scoring failures do not trigger replacement sampling.
 
 Unfinished sites receive one round each in GAPS-rank order. Each round runs a
 separate PepGLAD process with GPU minibatches of eight. Validation rounds start
@@ -106,7 +104,7 @@ until round cleanup, without aborting other samples. A site's sampling
 shortfall does not stop the other sites: AlloPep retains and ranks the partial
 valid results. Exit statuses are
 `0` when all sites reach their targets, `2` for a sampling shortfall, and `1`
-for an operational failure. Existing Rosetta scoring-error reports remain
+for an operational failure. Existing Vina scoring-error reports remain
 available; all scoring jobs failing is an operational failure.
 
 AlloPep starts GAPS and PepGLAD in their own environments.
@@ -203,12 +201,11 @@ For `input/structure.pdb`, results go in `output/structure_output/`:
 | `structure_PepGLAD_outputs/*_codesign/round_*/` | Isolated round outputs, `round.json` sample range, `pepglad.log`, `validation.log`, and per-round validation reports. |
 | `structure_PepGLAD_outputs/*_codesign/round_*/removed_structures.json` | Rejected PDB paths, statuses, and original hashes; permits safe resume after deleting those structures. |
 | `structure_pepglad_aligned.pse` | PyMOL session showing the original input receptor colored by GAPS score, selected site surfaces, and selected valid PepGLAD peptides. |
-| `structure_rosetta_score/structure_pepglad_validation.csv` | Status, counts, and rejection reasons for every PepGLAD structure. |
-| `structure_rosetta_score/structure_pepglad_validation.jsonl` | Per-atom validation details. |
-| `structure_rosetta_score/structure_rosetta_manifest.csv` | Valid structures submitted to InterfaceAnalyzer. |
-| `structure_rosetta_score/structure_rosetta_results.csv` | Interface metrics and per-design errors for every submitted structure. |
-| `structure_rosetta_score/structure_rosetta_ranked.csv` | Successfully scored structures, ordered from lowest to highest `rosetta_dG_separated`. |
-| `structure_rosetta_score/rosetta_runs/` | Per-design raw scorefiles and logs. |
+| `structure_vina_score/structure_pepglad_validation.csv` | Status, counts, and rejection reasons for every PepGLAD structure. |
+| `structure_vina_score/structure_pepglad_validation.jsonl` | Per-atom validation details. |
+| `structure_vina_score/structure_vina_manifest.csv` | Selected valid structures submitted to Vina. |
+| `structure_vina_score/structure_vina_results.csv` | Vina components, provenance, and per-design errors for every submitted structure. |
+| `structure_vina_score/structure_vina_ranked.csv` | Successfully scored structures, ordered from lowest to highest `score_total`. |
 
 Open the allosteric site view with
 `pymol output/structure_output/structure_allosteric_site.pse`, or run the
@@ -245,21 +242,23 @@ Validation rejects inverted chirality, severe peptide geometry or continuity
 problems, missing peptide atoms, Ramachandran or rotamer outliers, peptide or
 interface clashes, and absent receptor contact. Hydrogen atoms are excluded
 from heavy-atom geometry checks. If no structures pass, AlloPep stops before
-Rosetta scoring. Inspect the validation CSV and JSONL for the reasons.
+Vina scoring. Inspect the validation CSV and JSONL for the reasons.
 
-InterfaceAnalyzer scores each validated, unchanged complex with explicit
-receptor and peptide chains. It neither relaxes nor repacks the bound or
-separated structures. AlloPep ranks lower `dG_separated` values first using
-the bundled 26-term ridge weights. The weights came from
-`compare_docking_scoring_function/output/rosetta_affinity/optimized_rosetta_26_terms.wts`;
-their SHA-256 is
-`e193a7acc0cfe0918a15662cac9d021f232797da81d57aa89e6a1c6005983044`.
-The results CSV records the same checksum, executable path, and each design's
-raw scorefile and log. Failed Rosetta jobs stay in the results CSV but are
-omitted from ranking.
-Existing Vina output directories remain historical and are not converted.
+The bundled scorer prepares each selected complex with Meeko, using explicit
+receptor and peptide chains from PepGLAD. It scores the saved rigid pose
+without docking or coordinate optimization. One set of receptor maps is used
+to score peptide residue fragments; their raw interaction energies are summed
+before rounding. Lower `score_total` ranks first, with site and sample IDs
+breaking ties.
 
-These fitted scores are empirical ranking signals, not measured binding free
-energies. GAPS-guided sampling and the fitted weights have not established
-experimental affinity, allosteric activity, or dynamic stability for the
-generated peptides.
+The protocol is `rigid_meeko_vina_residue_sum_v1`. Defaults retain input
+hydrogens, pad the peptide bounds by 5 Å per side, and use 0.375 Å grid
+spacing. Results record score components, normalized diagnostics, input
+hashes, preparation settings, and Vina/Meeko versions. Failed jobs remain in
+the results CSV and are excluded from ranking. See [Vina ranking](docs/scoring.md).
+
+Earlier Rosetta reports remain historical artifacts. Saved generation rounds
+can be resumed or reranked with Vina; their original reports are preserved.
+Vina scores are empirical ranking signals in nominal kcal/mol. Experimental
+affinity, allosteric activity, and dynamic stability of generated peptides
+have not been established by this pipeline.

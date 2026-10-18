@@ -1,7 +1,7 @@
 # Installation
 
 AlloPep's installer prepares three separate Conda environments and patched,
-pinned GAPS and PepGLAD checkouts. Rosetta is installed separately.
+pinned GAPS and PepGLAD checkouts. The Vina scorer is bundled in this repository.
 
 ## Prerequisites
 
@@ -48,30 +48,25 @@ the hash of the actual `codesign.ckpt` used for a run.
 
 | Environment | Responsibility | Selected dependencies |
 | --- | --- | --- |
-| `allopep` | Pipeline control, accessibility, validation, visualization, Rosetta invocation | Python 3.12, OpenStructure 2.11.1, CCTBX 2025.9, chem_data 2026.9, FreeSASA, PyMOL 3.1.0 |
+| `allopep` | Pipeline control, accessibility, validation, visualization, Vina scoring | Python 3.12, OpenStructure 2.11.1, CCTBX 2025.9, chem_data 2026.9, FreeSASA, PyMOL 3.1.0, Meeko 0.8.0, Vina 1.2.7 |
 | `gaps` | GAPS inference | Python 3.10, PyTorch 1.13.1, PyTorch CUDA 11.7 |
 | `PepGLAD` | Peptide generation and OpenMM relaxation | The patched upstream `PepGLAD/env.yaml`, plus Ray's default extras |
 
 Activate `allopep` for the main CLI. AlloPep launches the other two environments
 through `conda run`; their names and capitalization matter.
 
-## Install Rosetta separately
+## Bundled Vina scoring
 
-Follow the [Rosetta installation
-instructions](https://docs.rosettacommons.org/docs/latest/getting_started/Getting-Started)
-and locate an executable `InterfaceAnalyzer` binary. Either make it available
-under that name on `PATH`, or supply its full path:
+`vina_scoring/` contains the rigid-pose scorer. `environment.yml` installs
+Meeko 0.8.0 and Vina 1.2.7 directly. A design or reranking run checks these
+dependencies and Meeko's receptor-preparation executable before processing
+structures. `--validate-existing` skips scoring dependency checks.
+
+An existing installation can update just the main environment:
 
 ```bash
-conda activate allopep
-python allopep.py input/structure.pdb \
-  --rosetta-bin /path/to/InterfaceAnalyzer
+conda env update -n allopep -f environment.yml
 ```
-
-Builds with names such as `InterfaceAnalyzer.linuxgccrelease` can be selected
-with `--rosetta-bin`. The installer and `environment.yml` do not install
-Rosetta. A design run resolves the binary before generation begins;
-`--validate-existing` does not require it.
 
 ## Check the installation
 
@@ -81,6 +76,8 @@ From the repository root:
 conda run --no-capture-output -n allopep python allopep.py --help
 conda run --no-capture-output -n allopep python -c \
   "import ost, mmtbx, freesasa, pymol; print('Validation and visualization imports OK')"
+conda run --no-capture-output -n allopep python -c \
+  "from vina_ranking import check_vina_dependencies; check_vina_dependencies()"
 conda run --no-capture-output -n gaps python -c \
   "import torch; print('GAPS CUDA available:', torch.cuda.is_available())"
 conda run --no-capture-output -n PepGLAD python -c \
@@ -88,8 +85,7 @@ conda run --no-capture-output -n PepGLAD python -c \
 ```
 
 These are environment checks, not a complete design or scientific validation
-run. If you use automatic Rosetta discovery, also check `command -v
-InterfaceAnalyzer` in the activated `allopep` environment.
+run. Vina scoring uses the bundled source and dependencies in `allopep`.
 
 ## Update or repair an installation
 

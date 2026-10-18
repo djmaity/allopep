@@ -166,6 +166,7 @@ venv.bak/
 
 # mkdocs documentation
 /site
+/.venv-docs/
 
 # mypy
 .mypy_cache/
@@ -219,7 +220,6 @@ __marimo__/
 checkpoints.zip
 
 # Directories to ignore
-APOP/
 GAPS/
 PepGLAD/
 input/

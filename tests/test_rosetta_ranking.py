@@ -23,22 +23,23 @@ def design(path, site=1, sample=0, sequence='LHLKA', peptide_chain='B',
 
 
 class RosettaRankingTests(unittest.TestCase):
-    def test_pymol_session_shows_gaps_receptor_and_pepglad_peptides(self):
+    def test_pymol_session_shows_original_receptor_and_pepglad_peptides(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / 'target output'
             root.mkdir()
-            gaps_pdb = root / 'target_GAPS_output.pdb'
-            gaps_pdb.touch()
+            input_pdb = root / 'target.pdb'
+            input_pdb.touch()
             generated = []
             for site in (1, 2, 3, 4):
                 site_dir = root / f'target_allosteric_site_{site}_codesign'
                 site_dir.mkdir()
                 pocket_dir = root / 'target_allosteric_sites'
                 pocket_dir.mkdir(exist_ok=True)
+                entries = [['A', [10, ' ']], ['A', [11, 'A']], ['B', [20, ' ']]]
+                if site == 4:  # Read-only viewing of an older scored pocket.
+                    entries = [entry + [0.8] for entry in entries]
                 (pocket_dir / f'target_allosteric_site_{site}.json').write_text(
-                    json.dumps([['A', [10, ' '], 0.8],
-                                ['A', [11, 'A'], 0.7],
-                                ['B', [20, ' '], 0.6]]), encoding='utf-8')
+                    json.dumps(entries), encoding='utf-8')
                 model = site_dir / 'target_0.pdb'
                 model.touch()
                 (site_dir / 'summary.jsonl').write_text(json.dumps({
@@ -66,19 +67,21 @@ class RosettaRankingTests(unittest.TestCase):
                 session.write_bytes(b'PyMOL session')
                 return SimpleNamespace(returncode=0, stderr='', stdout='')
 
-            with patch('allopep.subprocess.run', side_effect=build_session):
+            with patch('allopep._pymol_score_commands', return_value=[]) as scores, \
+                 patch('allopep.subprocess.run', side_effect=build_session):
                 session = write_pymol_session(generated, root, 'target')
+            scores.assert_called_once_with(root, 'target', 'target')
             content = scripts[0]
             self.assertEqual(session.name, 'target_pepglad_aligned.pse')
             self.assertEqual(session.read_bytes(), b'PyMOL session')
             self.assertFalse(legacy_script.exists())
             self.assertFalse(list(root.glob('**/*.pml')))
-            self.assertIn(f'load {json.dumps(str(gaps_pdb.resolve()))}, '
+            self.assertIn(f'load {json.dumps(str(input_pdb.resolve()))}, '
                           'target', content)
             self.assertIn('hide everything, all', content)
             self.assertIn('show cartoon, target', content)
             self.assertIn('spectrum b, blue_white_red, target '
-                          'and polymer.protein, minimum=0, maximum=1', content)
+                          'and polymer.protein and b > -0.5, minimum=0, maximum=1', content)
             site_colors = {1: 'green', 2: 'cyan',
                            3: 'lightmagenta', 4: 'yellow'}
             for output in generated:
@@ -125,10 +128,11 @@ class RosettaRankingTests(unittest.TestCase):
     def test_pymol_failure_preserves_existing_session(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            (root / 'target_GAPS_output.pdb').touch()
+            (root / 'target.pdb').touch()
             session = root / 'target_pepglad_aligned.pse'
             session.write_bytes(b'previous session')
-            with patch('allopep.subprocess.run', return_value=SimpleNamespace(
+            with patch('allopep._pymol_score_commands', return_value=[]), \
+                 patch('allopep.subprocess.run', return_value=SimpleNamespace(
                     returncode=1, stderr='PyMOL failed', stdout='')):
                 with self.assertRaisesRegex(RuntimeError, 'PyMOL failed'):
                     write_pymol_session([], root, 'target')
@@ -346,7 +350,6 @@ class RosettaRankingTests(unittest.TestCase):
         self.assertEqual(parse_args(['target.pdb']).max_rank, 'all')
         self.assertEqual(parse_args(['target.pdb', '--max_rank', 'all']).max_rank, 'all')
         self.assertEqual(parse_args(['target.pdb', '--max_rank', '2']).max_rank, 2)
-
 
     def test_chain_mismatch_records_error_without_running_rosetta(self):
         with tempfile.TemporaryDirectory() as directory:

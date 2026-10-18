@@ -13,6 +13,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from pepglad_outputs import removed_structures
+
 
 def pdb_coordinate_error(path):
     with path.open(encoding='utf-8') as handle:
@@ -36,12 +38,15 @@ def inspect_site(site_dir):
     ids = [record['id'] for record in records]
     if len(ids) != len(set(ids)):
         raise ValueError(f'Duplicate IDs in {summary_path}')
-    if {path.stem for path in site_dir.glob('*.pdb')} != {
-            record['id'] for record in records if record.get('status') not in ('invalid', 'error')}:
+    removed = {Path(relative).stem for relative in removed_structures(site_dir)
+               if len(Path(relative).parts) == 1}
+    if {path.stem for path in site_dir.glob('*.pdb')} - removed != {
+            record['id'] for record in records
+            if record.get('status') not in ('invalid', 'error')} - removed:
         raise ValueError(f'PDB files do not match {summary_path}')
     relaxed, pending, invalid = [], [], []
     for record in records:
-        if record.get('status') in ('invalid', 'error'):
+        if record.get('status') in ('invalid', 'error') or record['id'] in removed:
             continue
         path = site_dir / (record['id'] + '.pdb')
         with path.open(encoding='utf-8') as handle:

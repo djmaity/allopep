@@ -2,6 +2,7 @@
 
 import csv
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -10,10 +11,10 @@ from unittest.mock import patch
 
 from allopep import (find_existing_pepglad_outputs, parse_args, prepare_input_pdb,
                      main, rank_pepglad_outputs, run_openstructure_validation,
-                     run_pepglad, write_pymol_session)
+                     run_pepglad_round, write_pymol_session)
 from pepglad_outputs import DesignOutput, load_design_outputs
 from rosetta_scoring import parse_scorefile, resolve_rosetta_binary
-from run_gaps import GuidanceContext, ScoredResidue
+from run_gaps import ScoredResidue, select_contexts, select_guidance_contexts
 
 
 def design(path, site=1, sample=0, sequence='LHLKA', peptide_chain='B',
@@ -160,70 +161,25 @@ class RosettaRankingTests(unittest.TestCase):
                 prepare_input_pdb(source, out_dir)
             self.assertEqual(saved.read_bytes(), b'original input')
 
-    def test_pepglad_inputs_and_output_paths(self):
-        args = SimpleNamespace(
-            max_rank=1, length_min=5, length_max=10, num_samples=1,
-        )
-        residue = ScoredResidue('A', 1, ' ', 0.873241, (0.0, 0.0, 0.0), 0.5)
-        context = GuidanceContext(residue, (residue,))
-        with tempfile.TemporaryDirectory(dir='.') as directory:
-            out_dir = Path(directory) / 'output'
-            output_pdb = (
-                out_dir / 'target_PepGLAD_outputs'
-                / 'target_allosteric_site_1_codesign' / 'target_0.pdb'
-            )
-            output_pdb.parent.mkdir(parents=True)
-            output_pdb.touch()
-            (output_pdb.parent / 'summary.jsonl').write_text(json.dumps({
-                'id': 'target_0', 'pep_seq': 'LHLKA',
-                'pep_chain': 'B', 'rec_chains': ['A'],
-            }) + '\n', encoding='utf-8')
-
-            with patch('allopep.subprocess.run') as subprocess_run:
-                generated = run_pepglad(
-                    args, '/input/target.pdb', out_dir, 'target', [context]
-                )
-
-            pocket_file = (
-                out_dir / 'target_allosteric_sites'
-                / 'target_allosteric_site_1.json'
-            )
-            self.assertEqual(pocket_file.read_text(), '[["A", [1, " "]]]')
-            self.assertEqual(generated, [design(output_pdb)])
-            command = subprocess_run.call_args.args[0]
-            self.assertEqual(command[:7], [
-                'conda', 'run', '--no-capture-output', '-n', 'PepGLAD',
-                'python', '-m',
-            ])
-            self.assertEqual(command[command.index('--pocket') + 1], f'../{pocket_file}')
-            self.assertEqual(command[command.index('--out_dir') + 1], f'../{output_pdb.parent}')
-            self.assertNotIn('--score-guidance-strength', command)
-
-    def test_resume_reuses_only_relaxed_matching_site(self):
-        residue = ScoredResidue('A', 1, ' ', 0.873241, (0.0, 0.0, 0.0), 0.5)
-        context = GuidanceContext(residue, (residue,))
+    def test_pepglad_round_uses_absolute_paths_and_an_isolated_log(self):
+        args = SimpleNamespace(length_min=5, length_max=10)
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            pocket = root / 'target_allosteric_sites' / 'target_allosteric_site_1.json'
-            pocket.parent.mkdir()
-            pocket.write_text(json.dumps(context.as_pepglad_pocket()))
-            site = root / 'target_PepGLAD_outputs' / 'target_allosteric_site_1_codesign'
-            site.mkdir(parents=True)
-            pdb = site / 'target_0.pdb'
-            pdb.write_text('REMARK   1 CREATED WITH OPENMM 8.0\n')
-            (site / 'summary.jsonl').write_text(json.dumps({
-                'id': 'target_0', 'pep_seq': 'LHLKA',
-                'pep_chain': 'B', 'rec_chains': ['A'],
-            }) + '\n')
-            args = SimpleNamespace(resume=True, num_samples=1)
-            with patch('allopep.subprocess.run') as subprocess_run:
-                self.assertEqual(run_pepglad(
-                    args, '/input/target.pdb', root, 'target', [context]),
-                    [design(pdb)])
-                subprocess_run.assert_not_called()
-            pdb.write_text('ATOM      1\n')
-            with self.assertRaisesRegex(RuntimeError, 'unrelaxed samples'):
-                run_pepglad(args, '/input/target.pdb', root, 'target', [context])
+            pocket = root / 'pocket.json'
+            round_dir = root / 'round_000001'
+            with patch('allopep.run_logged') as run:
+                run_pepglad_round(args, '/input/target.pdb', pocket, round_dir, 16,
+                                  deadline=1234)
+            command = run.call_args.args[0]
+            self.assertEqual(command[:7], [
+                'conda', 'run', '--no-capture-output', '-n', 'PepGLAD',
+                'python', '-m'])
+            self.assertEqual(command[command.index('--pocket') + 1], str(pocket.resolve()))
+            self.assertEqual(command[command.index('--out_dir') + 1], str(round_dir.resolve()))
+            self.assertEqual(command[command.index('--n_samples') + 1], '16')
+            self.assertEqual(run.call_args.kwargs['deadline'], 1234)
+            self.assertEqual(run.call_args.kwargs['log_file'], round_dir / 'pepglad.log')
+            self.assertNotIn('--score-guidance-strength', command)
 
     def test_ranks_only_validated_structures_by_lower_rosetta_score(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -351,6 +307,38 @@ class RosettaRankingTests(unittest.TestCase):
         self.assertEqual(parse_args(['target.pdb', '--max_rank', 'all']).max_rank, 'all')
         self.assertEqual(parse_args(['target.pdb', '--max_rank', '2']).max_rank, 2)
 
+    def test_new_design_uses_effective_gaps_selector_defaults(self):
+        residues = [
+            ScoredResidue('A', site * 10 + offset + 1, ' ', 0.9 - site * 0.1,
+                          (site * 20.0 + offset * 2.0, 0.0, 0.0), 0.5)
+            for site in range(4) for offset in range(2)
+        ]
+        expected = select_contexts(residues)
+        with tempfile.TemporaryDirectory() as directory:
+            previous_dir = os.getcwd()
+            try:
+                os.chdir(directory)
+                with patch('allopep.resolve_rosetta_binary', return_value='/fake/ia'), \
+                     patch('allopep.prepare_input_pdb', return_value='/fake/target.pdb'), \
+                     patch('allopep.run_gaps.run_gaps'), \
+                     patch('allopep.run_gaps.load_scored_residues',
+                           return_value=residues), \
+                     patch('allopep.run_gaps.select_guidance_contexts',
+                           wraps=select_guidance_contexts) as selector, \
+                     patch('allopep.run_pepglad', return_value=SimpleNamespace(
+                         selected=[], shortfall=True, summary_path='summary.json')) as pepglad, \
+                     patch('allopep.write_pymol_session', return_value='session.pse'), \
+                     patch('allopep.run_openstructure_validation', return_value=[]):
+                    main(['target.pdb'])
+                self.assertEqual(selector.call_args.kwargs, {'max_rank': 'all'})
+                self.assertEqual(pepglad.call_args.args[4], expected)
+                pockets = pepglad.call_args.args[4]
+                self.assertEqual(len(pockets), 4)
+                self.assertEqual(pockets[0].seed, residues[0])
+                self.assertEqual(pockets[0].residues, tuple(residues[:2]))
+            finally:
+                os.chdir(previous_dir)
+
     def test_chain_mismatch_records_error_without_running_rosetta(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -454,7 +442,9 @@ class RosettaRankingTests(unittest.TestCase):
 
     def test_invalid_cli_options_fail_before_pipeline_stages(self):
         for option in ('--length_min 0', '--length_min 8 --length_max 7',
-                       '--num_samples 0',
+                       '--num_samples 0', '--max_num_peptides 0',
+                       '--attempt-multiplier 0', '--attempt-multiplier -1',
+                       '-n 5 --max_num_peptides 4', '--round-timeout-seconds 0',
                        '--peptide-chain AA'):
             with self.subTest(option=option), \
                  patch('allopep.prepare_input_pdb') as prepare:

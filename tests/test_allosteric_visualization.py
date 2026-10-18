@@ -153,6 +153,28 @@ class AllostericVisualizationTests(unittest.TestCase):
                 write_allosteric_site_visualization(self.out, 'target')
         launch.assert_not_called()
 
+    def test_site_view_is_created_before_sampling_starts(self):
+        events = []
+        result = object()
+
+        def start_sampling():
+            self.assertTrue((self.out / 'target_allosteric_site.pse').is_file())
+            events.append('sampling')
+            return result
+
+        def create_view(out, prefix):
+            session = out / f'{prefix}_allosteric_site.pse'
+            session.touch()
+            events.append('visualization')
+            return session
+
+        with patch('allopep.SamplingController') as controller, \
+             patch('allopep.write_allosteric_site_visualization',
+                   side_effect=create_view):
+            controller.return_value.run.side_effect = start_sampling
+            self.assertIs(run_pepglad(None, 'target.pdb', self.out, 'target', []),
+                          result)
+        self.assertEqual(events, ['visualization', 'sampling'])
 
 
 if __name__ == '__main__':

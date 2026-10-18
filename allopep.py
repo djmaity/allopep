@@ -11,11 +11,14 @@ import re
 import shutil
 import subprocess
 import tempfile
+import sys
 from pathlib import Path
 
 from Bio.PDB import PDBParser
 
-from pepglad_outputs import load_design_outputs
+from pepglad_outputs import load_round_outputs, site_rounds
+from peptide_sampling import SamplingController, require_resume, sampling_lock
+from process_control import run_logged
 from rosetta_scoring import rank_pepglad_outputs, resolve_rosetta_binary
 import run_gaps
 
@@ -45,7 +48,13 @@ def parse_args(argv=None):
     parser.add_argument('-L', '--length_max', default=10, type=int,
                         help='Maximum length of the predicted peptide')
     parser.add_argument('-n', '--num_samples', default=10, type=int,
-                        help='Number of predicted peptides per site')
+                        help='Number of physically valid structures per site (default: 10)')
+    parser.add_argument('--attempt-multiplier', default=1000, type=int,
+                        help='Attempt budget per site is this positive integer times -n (default: 1000)')
+    parser.add_argument('--max_num_peptides', default=None, type=int,
+                        help='Absolute attempt cap per site; overrides --attempt-multiplier times -n')
+    parser.add_argument('--round-timeout-seconds', default=3600, type=int,
+                        help='Deadline for generation, relaxation and validation of one round (default: 3600)')
     parser.add_argument('-c', '--peptide-chain', default=None,
                         help='Known peptide chain ID; uses PepGLAD summary if omitted')
     existing = parser.add_mutually_exclusive_group()
@@ -54,7 +63,7 @@ def parse_args(argv=None):
     existing.add_argument('-R', '--rank-existing', action='store_true',
                           help='Validate and rank existing PepGLAD PDBs with Rosetta')
     existing.add_argument('--resume', action='store_true',
-                          help='Reuse completed PepGLAD sites and design missing sites')
+                          help='Resume sampling using saved rounds and cumulative attempt budgets')
     parser.add_argument('--rosetta-bin', default=None,
                         help='InterfaceAnalyzer executable (default: find on PATH)')
     return parser.parse_args(argv)
@@ -85,14 +94,10 @@ def prepare_input_pdb(input_pdb, out_dir, validate_existing=False):
     return str(source)
 
 
-def run_pepglad(args, pdb_file, out_dir, prefix, contexts):
-    sites_dir = out_dir / f'{prefix}_allosteric_sites'
-    sites_dir.mkdir(parents=True, exist_ok=True)
-
+def run_pepglad_round(args, pdb_file, pocket_file, round_dir, count, *, deadline):
+    """Generate one isolated round; the controller owns IDs and attempt budgets."""
     env = os.environ.copy()
     env['RAY_ACCEL_ENV_VAR_OVERRIDE_ON_ZERO'] = '0'
-    # PepGLAD pins OpenMM 8.0 and uses PDBFixer 1.9, which still imports
-    # pkg_resources. Limit this upstream warning filter to PepGLAD workers.
     pdbfixer_warning = (
         'ignore:pkg_resources is deprecated as an API:'
         'UserWarning:pdbfixer.pdbfixer'
@@ -100,62 +105,31 @@ def run_pepglad(args, pdb_file, out_dir, prefix, contexts):
     env['PYTHONWARNINGS'] = ','.join(filter(None, (
         env.get('PYTHONWARNINGS'), pdbfixer_warning,
     )))
-
-    generated = []
-    for rank, context in enumerate(contexts, start=1):
-        pocket_file = sites_dir / f'{prefix}_allosteric_site_{rank}.json'
-        pocket = context.as_pepglad_pocket()
-        codesign_dir = (
-            out_dir / f'{prefix}_PepGLAD_outputs'
-            / f'{prefix}_allosteric_site_{rank}_codesign'
-        )
-        if getattr(args, 'resume', False) and codesign_dir.exists():
-            if not pocket_file.is_file() or json.loads(pocket_file.read_text()) != pocket:
-                raise ValueError(f'Saved PepGLAD pocket differs for site {rank}: {pocket_file}')
-            summary_path = codesign_dir / 'summary.jsonl'
-            records = [json.loads(line) for line in summary_path.read_text().splitlines()
-                       if line.strip()]
-            expected = {f'{prefix}_{i}' for i in range(args.num_samples)}
-            if len(records) != args.num_samples or {r['id'] for r in records} != expected:
-                raise ValueError(f'Saved PepGLAD sample IDs differ: {summary_path}')
-            site_generated = [(codesign_dir / f'{prefix}_{i}.pdb', rank, i)
-                              for i in range(args.num_samples)
-                              if (codesign_dir / f'{prefix}_{i}.pdb').is_file()]
-            designs = load_design_outputs(
-                site_generated, exact=True, summary_paths=[summary_path])
-            for design in designs:
-                with design.path.open(encoding='utf-8') as handle:
-                    if not handle.readline().startswith('REMARK   1 CREATED WITH OPENMM'):
-                        raise RuntimeError(
-                            f'PepGLAD site {rank} has unrelaxed samples; '
-                            f'run recover_pepglad_relaxation.py on {codesign_dir}')
-            generated.extend(site_generated)
-            print(f'Reusing {len(designs)} relaxed designs for site {rank}')
-            continue
-        with pocket_file.open('w', encoding='utf-8') as handle:
-            json.dump(pocket, handle)
-        subprocess.run([
-            'conda', 'run', '--no-capture-output', '-n', 'PepGLAD',
-            'python', '-m', 'api.run', '--mode', 'codesign',
-            '--pdb', pdb_file,
-            '--pocket', f'../{pocket_file}',
-            '--out_dir', f'../{codesign_dir}',
-            '--length_min', str(args.length_min),
-            '--length_max', str(args.length_max),
-            '--n_samples', str(args.num_samples),
-        ], cwd='PepGLAD', env=env, check=True)
-
-        for sample_index in range(args.num_samples):
-            output_pdb = codesign_dir / f'{prefix}_{sample_index}.pdb'
-            if output_pdb.is_file():
-                generated.append((output_pdb, rank, sample_index))
-        load_design_outputs(
-            [entry for entry in generated if entry[1] == rank],
-            exact=True, summary_paths=[codesign_dir / 'summary.jsonl'])
-    return load_design_outputs(generated)
+    run_logged([
+        'conda', 'run', '--no-capture-output', '-n', 'PepGLAD',
+        'python', '-m', 'api.run', '--mode', 'codesign',
+        '--pdb', str(Path(pdb_file).resolve()),
+        '--pocket', str(Path(pocket_file).resolve()),
+        '--out_dir', str(Path(round_dir).resolve()),
+        '--length_min', str(args.length_min),
+        '--length_max', str(args.length_max),
+        '--n_samples', str(count),
+    ], cwd=Path(__file__).resolve().parent / 'PepGLAD', env=env,
+        log_file=round_dir / 'pepglad.log', deadline=deadline)
 
 
-def run_openstructure_validation(generated, score_dir, prefix, peptide_chain, input_pdb):
+def run_pepglad(args, pdb_file, out_dir, prefix, contexts):
+    with sampling_lock(out_dir):
+        controller = SamplingController(
+            args, pdb_file, out_dir, prefix, contexts,
+            run_pepglad_round, run_openstructure_validation)
+        session = write_allosteric_site_visualization(out_dir, prefix)
+        print(f'Allosteric site visualization: {session.with_suffix(".pml")} and {session}')
+        return controller.run()
+
+
+def run_openstructure_validation(generated, score_dir, prefix, peptide_chain, input_pdb,
+                                *, deadline=None, allow_errors=False):
     """Check generated complexes and return the designs that pass."""
     ost = shutil.which('ost')
     if ost is None:
@@ -180,7 +154,10 @@ def run_openstructure_validation(generated, score_dir, prefix, peptide_chain, in
                '--jsonl', str(jsonl_file.resolve())]
     if peptide_chain:
         command.extend(['--peptide-chain', peptide_chain])
-    subprocess.run(command, check=True)
+    if deadline is None:
+        subprocess.run(command, check=True)
+    else:
+        run_logged(command, log_file=score_dir / 'validation.log', deadline=deadline)
     with csv_file.open(newline='', encoding='utf-8') as handle:
         rows = list(csv.DictReader(handle))
     by_path = {design.resolved_path: design for design in generated}
@@ -188,13 +165,15 @@ def run_openstructure_validation(generated, score_dir, prefix, peptide_chain, in
             or {row['path'] for row in rows} != set(by_path)):
         raise RuntimeError('OpenStructure result paths differ from PepGLAD outputs')
     errors = [row for row in rows if row['status'] == 'error']
-    if errors:
+    if errors and not allow_errors:
         raise RuntimeError(f'{len(errors)} OpenStructure checks failed; see {csv_file}')
-    if any(row['status'] not in ('valid', 'invalid') for row in rows):
+    if any(row['status'] not in ('valid', 'invalid', 'error') for row in rows):
         raise RuntimeError(f'Unexpected OpenStructure status; see {csv_file}')
     valid = []
     for row in rows:
         design = by_path[row['path']]
+        if row['status'] == 'error':
+            continue
         if row['peptide_chain'] != design.peptide_chain:
             raise RuntimeError(f'OpenStructure peptide chain differs for {row["path"]}')
         if row['status'] == 'valid':
@@ -203,21 +182,19 @@ def run_openstructure_validation(generated, score_dir, prefix, peptide_chain, in
 
 
 def find_existing_pepglad_outputs(out_dir, prefix):
-    generated = []
-    summary_paths = []
+    designs = []
     pattern = re.compile(rf'^{re.escape(prefix)}_allosteric_site_(\d+)_codesign$')
     for site_dir in (out_dir / f'{prefix}_PepGLAD_outputs').glob('*_codesign'):
         site = pattern.fullmatch(site_dir.name)
         if not site:
             continue
-        summary_paths.append(site_dir / 'summary.jsonl')
-        for pdb in site_dir.glob('*.pdb'):
-            stem = pdb.stem
-            sample = re.fullmatch(rf'{re.escape(prefix)}_(\d+)', stem)
-            if sample:
-                generated.append((pdb, int(site.group(1)), int(sample.group(1))))
-    generated.sort(key=lambda item: (item[1], item[2]))
-    return load_design_outputs(generated, exact=True, summary_paths=summary_paths)
+        for entry in site_rounds(site_dir, prefix):
+            outputs, _ = load_round_outputs(
+                entry['directory'], int(site.group(1)), prefix,
+                entry['start'], entry['count'], partial=not entry['legacy'])
+            designs.extend(outputs)
+    designs.sort(key=lambda design: (design.site, design.sample))
+    return designs
 
 
 def _pymol_score_commands(out_dir, prefix, reference):
@@ -400,19 +377,34 @@ def main(argv=None):
         raise ValueError('--length_min must be positive and no greater than --length_max')
     if args.num_samples < 1:
         raise ValueError('--num_samples must be positive')
+    if args.attempt_multiplier < 1:
+        raise ValueError('--attempt-multiplier must be positive')
+    if args.max_num_peptides is None:
+        args.max_num_peptides = args.attempt_multiplier * args.num_samples
+    if args.max_num_peptides < args.num_samples:
+        raise ValueError('--max_num_peptides must be positive and at least --num_samples')
+    if args.round_timeout_seconds < 1:
+        raise ValueError('--round-timeout-seconds must be positive')
     if args.peptide_chain is not None and not re.fullmatch(r'[A-Za-z0-9]', args.peptide_chain):
         raise ValueError('--peptide-chain must be one alphanumeric chain ID')
     rosetta_bin = None if args.validate_existing else resolve_rosetta_binary(args.rosetta_bin)
     prefix = Path(args.pdb_file).stem
     out_dir = Path('output') / f'{prefix}_output'
     reuse_existing = args.validate_existing or args.rank_existing
+    if not reuse_existing:
+        require_resume(out_dir, prefix, args.resume)
     pdb_file = prepare_input_pdb(args.pdb_file, out_dir, reuse_existing)
     score_dir = out_dir / f'{prefix}_rosetta_score'
+    score_dir.mkdir(parents=True, exist_ok=True)
+    shortfall = False
     if reuse_existing:
         generated = find_existing_pepglad_outputs(out_dir, prefix)
         if not generated:
             raise FileNotFoundError(f'No PepGLAD PDBs found under {out_dir}')
-        score_dir.mkdir(parents=True, exist_ok=True)
+        session = write_allosteric_site_visualization(out_dir, prefix)
+        print(f'Allosteric site visualization: {session.with_suffix(".pml")} and {session}')
+        valid_designs = run_openstructure_validation(
+            generated, score_dir, prefix, args.peptide_chain, pdb_file)
     else:
         run_gaps.run_gaps(pdb_file, out_dir=str(out_dir))
         contexts = run_gaps.select_guidance_contexts(
@@ -420,22 +412,24 @@ def main(argv=None):
             max_rank=args.max_rank,
         )
         print(f'Designing against {len(contexts)} GAPS-guided sites')
-        generated = run_pepglad(args, pdb_file, out_dir, prefix, contexts)
-        score_dir.mkdir(parents=True, exist_ok=True)
+        result = run_pepglad(args, pdb_file, out_dir, prefix, contexts)
+        valid_designs = result.selected
+        shortfall = result.shortfall
+        print(f'Sampling summary: {result.summary_path}')
 
-    pymol_session = write_pymol_session(generated, out_dir, prefix)
+    pymol_session = write_pymol_session(valid_designs, out_dir, prefix)
     print(f'PyMOL session: {pymol_session}')
-    valid_designs = run_openstructure_validation(
-        generated, score_dir, prefix, args.peptide_chain, pdb_file)
     if args.validate_existing:
-        return
+        return 0
     if not valid_designs:
         (score_dir / f'{prefix}_rosetta_ranked.csv').unlink(missing_ok=True)
         (score_dir / f'{prefix}_rosetta_results.csv').unlink(missing_ok=True)
         (score_dir / f'{prefix}_rosetta_manifest.csv').unlink(missing_ok=True)
         print('No PepGLAD structures passed OpenStructure validation; '
               f'see {score_dir / (prefix + "_pepglad_validation.csv")}')
-        return
+        if shortfall:
+            print('Sampling stopped at --max_num_peptides; exiting with status 2.')
+        return 2 if shortfall else 0
 
     ranked = rank_pepglad_outputs(valid_designs, score_dir, prefix, rosetta_bin)
     failures = len(valid_designs) - len(ranked)
@@ -443,7 +437,15 @@ def main(argv=None):
           f'({failures} scoring failures); '
           f'see {score_dir / (prefix + "_rosetta_ranked.csv")} and '
           f'{score_dir / (prefix + "_rosetta_results.csv")}')
+    if shortfall:
+        print('One or more sites exhausted --max_num_peptides before reaching '
+              'the valid-structure target; partial results were retained.')
+    return 2 if shortfall else 0
 
 
 if __name__ == '__main__':
-    main()
+    try:
+        sys.exit(main())
+    except Exception as exc:
+        print(f'AlloPep failed: {exc}', file=sys.stderr)
+        sys.exit(1)

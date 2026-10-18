@@ -94,7 +94,7 @@ class SamplingTests(unittest.TestCase):
         self.assertEqual(parsed.num_samples, 10)
         self.assertEqual(parsed.attempt_multiplier, 1000)
         self.assertIsNone(parsed.max_num_peptides)
-        with patch('allopep.resolve_rosetta_binary', side_effect=FileNotFoundError) as resolve:
+        with patch('allopep.check_vina_dependencies', side_effect=FileNotFoundError) as resolve:
             with self.assertRaises(FileNotFoundError):
                 main(['target.pdb', '-n', '3'])
         resolve.assert_called_once()
@@ -108,7 +108,7 @@ class SamplingTests(unittest.TestCase):
             with self.subTest(options=options):
                 parsed = parse_args(['target.pdb', '-n', '3', *options])
                 with patch('allopep.parse_args', return_value=parsed), \
-                     patch('allopep.resolve_rosetta_binary', side_effect=FileNotFoundError):
+                     patch('allopep.check_vina_dependencies', side_effect=FileNotFoundError):
                     with self.assertRaises(FileNotFoundError):
                         main()
                 self.assertEqual(parsed.max_num_peptides, expected)
@@ -136,7 +136,7 @@ class SamplingTests(unittest.TestCase):
         site = self.state()['sites'][0]
         self.assertEqual(site['attempted'], 40)
         self.assertEqual(site['completion_reason'], 'target_reached')
-        csv_path = self.out / 'target_rosetta_score/target_pepglad_validation.csv'
+        csv_path = self.out / 'target_vina_score/target_pepglad_validation.csv'
         with csv_path.open() as handle:
             self.assertEqual(len(list(csv.DictReader(handle))), 40)
 
@@ -207,7 +207,7 @@ class SamplingTests(unittest.TestCase):
         self.assertTrue(self.controller().run().shortfall)
         self.assertEqual(self.validation_calls, [])
         self.assertEqual(self.state()['sites'][0]['attempted'], 8)
-        with (self.out / 'target_rosetta_score/target_pepglad_validation.csv').open() as handle:
+        with (self.out / 'target_vina_score/target_pepglad_validation.csv').open() as handle:
             self.assertEqual(len(list(csv.DictReader(handle))), 8)
 
     def test_interrupted_cleanup_is_completed_on_resume_without_resampling(self):
@@ -270,6 +270,11 @@ class SamplingTests(unittest.TestCase):
     def test_resume_reuses_validated_rounds_and_does_not_reset_budget(self):
         self.args.max_num_peptides = 8
         self.assertTrue(self.controller().run().shortfall)
+        # Simulate cumulative reports saved before the scorer migration.
+        old_reports = self.out / 'target_rosetta_score'
+        (self.out / 'target_vina_score').rename(old_reports)
+        historical_csv = old_reports / 'target_pepglad_validation.csv'
+        historical_bytes = historical_csv.read_bytes()
         self.args.resume = True
         self.args.max_num_peptides = 16
         self.outcome = lambda site, sample: 'valid' if sample == 8 else 'invalid'
@@ -279,7 +284,8 @@ class SamplingTests(unittest.TestCase):
         self.assertEqual(self.validation_calls, [[(1, sample) for sample in range(8, 16)]])
         self.assertEqual(result.selected[0].sample, 8)
         self.assertEqual(self.state()['sites'][0]['attempted'], 16)
-        with (self.out / 'target_rosetta_score/target_pepglad_validation.csv').open() as handle:
+        self.assertEqual(historical_csv.read_bytes(), historical_bytes)
+        with (self.out / 'target_vina_score/target_pepglad_validation.csv').open() as handle:
             self.assertEqual(len(list(csv.DictReader(handle))), 16)
 
     def test_interruption_before_outputs_keeps_reserved_attempts_charged(self):
@@ -411,7 +417,7 @@ class SamplingTests(unittest.TestCase):
         for shortfall, expected, cap in ((False, 0, None), (True, 2, None),
                                          (False, 0, 20), (False, 0, 50000)):
             result = SimpleNamespace(selected=selected, shortfall=shortfall, summary_path='summary')
-            with patch('allopep.resolve_rosetta_binary', return_value='/fake/ia'), \
+            with patch('allopep.check_vina_dependencies', return_value='/fake/ia'), \
                  patch('allopep.prepare_input_pdb', return_value=str(self.pdb)), \
                  patch('allopep.run_gaps.run_gaps'), \
                  patch('allopep.run_gaps.select_guidance_contexts', return_value=self.contexts), \
@@ -435,7 +441,7 @@ class SamplingTests(unittest.TestCase):
         os.chdir(self.root)
         designs = [SimpleNamespace(sample=0)]
         for option in ('--validate-existing', '--rank-existing'):
-            with patch('allopep.resolve_rosetta_binary', return_value='/fake/ia'), \
+            with patch('allopep.check_vina_dependencies', return_value='/fake/ia'), \
                  patch('allopep.prepare_input_pdb', return_value=str(self.pdb)), \
                  patch('allopep.find_existing_pepglad_outputs', return_value=designs), \
                  patch('allopep.write_allosteric_site_visualization',

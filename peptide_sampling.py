@@ -108,7 +108,7 @@ class SamplingController:
         self.generate_round = generate_round
         self.validate_round = validate_round
         self.summary_path = self.out_dir / f'{prefix}_sampling_summary.json'
-        self.score_dir = self.out_dir / f'{prefix}_rosetta_score'
+        self.score_dir = self.out_dir / f'{prefix}_vina_score'
         self.sites_dir = self.out_dir / f'{prefix}_allosteric_sites'
         self.sites_dir.mkdir(parents=True, exist_ok=True)
         self.score_dir.mkdir(parents=True, exist_ok=True)

@@ -19,7 +19,7 @@ from Bio.PDB import PDBParser
 from pepglad_outputs import load_round_outputs, site_rounds
 from peptide_sampling import SamplingController, require_resume, sampling_lock
 from process_control import run_logged
-from rosetta_scoring import rank_pepglad_outputs, resolve_rosetta_binary
+from vina_ranking import check_vina_dependencies, rank_pepglad_outputs
 import run_gaps
 
 
@@ -61,11 +61,9 @@ def parse_args(argv=None):
     existing.add_argument('-v', '--validate-existing', action='store_true',
                           help='Check existing PepGLAD PDBs without rerunning design or scoring')
     existing.add_argument('-R', '--rank-existing', action='store_true',
-                          help='Validate and rank existing PepGLAD PDBs with Rosetta')
+                          help='Validate and rank existing PepGLAD PDBs with Vina')
     existing.add_argument('--resume', action='store_true',
                           help='Resume sampling using saved rounds and cumulative attempt budgets')
-    parser.add_argument('--rosetta-bin', default=None,
-                        help='InterfaceAnalyzer executable (default: find on PATH)')
     return parser.parse_args(argv)
 
 
@@ -387,14 +385,15 @@ def main(argv=None):
         raise ValueError('--round-timeout-seconds must be positive')
     if args.peptide_chain is not None and not re.fullmatch(r'[A-Za-z0-9]', args.peptide_chain):
         raise ValueError('--peptide-chain must be one alphanumeric chain ID')
-    rosetta_bin = None if args.validate_existing else resolve_rosetta_binary(args.rosetta_bin)
+    if not args.validate_existing:
+        check_vina_dependencies()
     prefix = Path(args.pdb_file).stem
     out_dir = Path('output') / f'{prefix}_output'
     reuse_existing = args.validate_existing or args.rank_existing
     if not reuse_existing:
         require_resume(out_dir, prefix, args.resume)
     pdb_file = prepare_input_pdb(args.pdb_file, out_dir, reuse_existing)
-    score_dir = out_dir / f'{prefix}_rosetta_score'
+    score_dir = out_dir / f'{prefix}_vina_score'
     score_dir.mkdir(parents=True, exist_ok=True)
     shortfall = False
     if reuse_existing:
@@ -422,21 +421,21 @@ def main(argv=None):
     if args.validate_existing:
         return 0
     if not valid_designs:
-        (score_dir / f'{prefix}_rosetta_ranked.csv').unlink(missing_ok=True)
-        (score_dir / f'{prefix}_rosetta_results.csv').unlink(missing_ok=True)
-        (score_dir / f'{prefix}_rosetta_manifest.csv').unlink(missing_ok=True)
+        (score_dir / f'{prefix}_vina_ranked.csv').unlink(missing_ok=True)
+        (score_dir / f'{prefix}_vina_results.csv').unlink(missing_ok=True)
+        (score_dir / f'{prefix}_vina_manifest.csv').unlink(missing_ok=True)
         print('No PepGLAD structures passed OpenStructure validation; '
               f'see {score_dir / (prefix + "_pepglad_validation.csv")}')
         if shortfall:
             print('Sampling stopped at --max_num_peptides; exiting with status 2.')
         return 2 if shortfall else 0
 
-    ranked = rank_pepglad_outputs(valid_designs, score_dir, prefix, rosetta_bin)
+    ranked = rank_pepglad_outputs(valid_designs, score_dir, prefix)
     failures = len(valid_designs) - len(ranked)
-    print(f'Ranked {len(ranked)} PepGLAD structures by Rosetta dG_separated '
+    print(f'Ranked {len(ranked)} PepGLAD structures by Vina score_total '
           f'({failures} scoring failures); '
-          f'see {score_dir / (prefix + "_rosetta_ranked.csv")} and '
-          f'{score_dir / (prefix + "_rosetta_results.csv")}')
+          f'see {score_dir / (prefix + "_vina_ranked.csv")} and '
+          f'{score_dir / (prefix + "_vina_results.csv")}')
     if shortfall:
         print('One or more sites exhausted --max_num_peptides before reaching '
               'the valid-structure target; partial results were retained.')

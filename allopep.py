@@ -44,8 +44,6 @@ def parse_args(argv=None):
                         help='Maximum length of the predicted peptide')
     parser.add_argument('-n', '--num_samples', default=10, type=int,
                         help='Number of predicted peptides per site')
-    parser.add_argument('-g', '--score-guidance-strength', default=1.0, type=float,
-                        help='Strength of continuous GAPS score guidance (default: 1.0)')
     parser.add_argument('-c', '--peptide-chain', default=None,
                         help='Known peptide chain ID; uses PepGLAD summary if omitted')
     existing = parser.add_mutually_exclusive_group()
@@ -143,7 +141,6 @@ def run_pepglad(args, pdb_file, out_dir, prefix, contexts):
             '--length_min', str(args.length_min),
             '--length_max', str(args.length_max),
             '--n_samples', str(args.num_samples),
-            '--score-guidance-strength', str(args.score_guidance_strength),
         ], cwd='PepGLAD', env=env, check=True)
 
         for sample_index in range(args.num_samples):
@@ -266,8 +263,8 @@ def _pymol_commands(generated, out_dir, prefix):
                        / f'{prefix}_allosteric_site_{site}.json')
         if pocket_file.is_file():
             residues_by_chain = {}
-            for chain, (number, icode), _ in json.loads(
-                    pocket_file.read_text(encoding='utf-8')):
+            for entry in json.loads(pocket_file.read_text(encoding='utf-8')):
+                chain, (number, icode) = entry[:2]
                 residues_by_chain.setdefault(chain, []).append(
                     f'{number}{icode.strip()}')
             surface = f'site_{site}'
@@ -335,8 +332,6 @@ def main(argv=None):
         raise ValueError('--length_min must be positive and no greater than --length_max')
     if args.num_samples < 1:
         raise ValueError('--num_samples must be positive')
-    if not math.isfinite(args.score_guidance_strength) or args.score_guidance_strength < 0:
-        raise ValueError('--score-guidance-strength must be finite and nonnegative')
     if args.peptide_chain is not None and not re.fullmatch(r'[A-Za-z0-9]', args.peptide_chain):
         raise ValueError('--peptide-chain must be one alphanumeric chain ID')
     rosetta_bin = None if args.validate_existing else resolve_rosetta_binary(args.rosetta_bin)

@@ -159,7 +159,6 @@ class RosettaRankingTests(unittest.TestCase):
     def test_pepglad_inputs_and_output_paths(self):
         args = SimpleNamespace(
             max_rank=1, length_min=5, length_max=10, num_samples=1,
-            score_guidance_strength=1.0,
         )
         residue = ScoredResidue('A', 1, ' ', 0.873241, (0.0, 0.0, 0.0), 0.5)
         context = GuidanceContext(residue, (residue,))
@@ -185,7 +184,7 @@ class RosettaRankingTests(unittest.TestCase):
                 out_dir / 'target_allosteric_sites'
                 / 'target_allosteric_site_1.json'
             )
-            self.assertEqual(pocket_file.read_text(), '[["A", [1, " "], 0.873241]]')
+            self.assertEqual(pocket_file.read_text(), '[["A", [1, " "]]]')
             self.assertEqual(generated, [design(output_pdb)])
             command = subprocess_run.call_args.args[0]
             self.assertEqual(command[:7], [
@@ -194,7 +193,7 @@ class RosettaRankingTests(unittest.TestCase):
             ])
             self.assertEqual(command[command.index('--pocket') + 1], f'../{pocket_file}')
             self.assertEqual(command[command.index('--out_dir') + 1], f'../{output_pdb.parent}')
-            self.assertEqual(command[command.index('--score-guidance-strength') + 1], '1.0')
+            self.assertNotIn('--score-guidance-strength', command)
 
     def test_resume_reuses_only_relaxed_matching_site(self):
         residue = ScoredResidue('A', 1, ' ', 0.873241, (0.0, 0.0, 0.0), 0.5)
@@ -446,7 +445,7 @@ class RosettaRankingTests(unittest.TestCase):
 
     def test_invalid_cli_options_fail_before_pipeline_stages(self):
         for option in ('--length_min 0', '--length_min 8 --length_max 7',
-                       '--num_samples 0', '--score-guidance-strength nan',
+                       '--num_samples 0',
                        '--peptide-chain AA'):
             with self.subTest(option=option), \
                  patch('allopep.prepare_input_pdb') as prepare:

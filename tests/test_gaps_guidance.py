@@ -75,7 +75,8 @@ class GapsGuidanceTests(unittest.TestCase):
         self.assertEqual(len(top), 3)
         self.assertEqual(len(all_sites), 4)
         self.assertEqual(len(top[0].residues), 3)
-        self.assertEqual(top[0].as_pepglad_pocket()[1][-1], 0.123456)
+        self.assertEqual(top[0].as_pepglad_pocket()[1], ['A', [2, ' ']])
+        self.assertEqual(top[0].residues[1].score, 0.123456)
         self.assertEqual(top, select_contexts(residues, GuidanceSelection()))
 
     def test_invalid_rank_is_rejected(self):

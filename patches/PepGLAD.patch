@@ -1,49 +1,11 @@
 diff --git a/api/run.py b/api/run.py
-index 773a539..932cb23 100644
+index 773a539..4900cae 100644
 --- a/api/run.py
 +++ b/api/run.py
-@@ -6,2 +6,3 @@ import json
- import argparse
-+import math
- from tqdm import tqdm
-@@ -12,2 +13,3 @@ import numpy as np
- import torch
-+import torch.nn.functional as F
- from torch.utils.data import DataLoader
-@@ -23,2 +25,46 @@ from evaluation.dG.openmm_relaxer import ForceFieldMinimizer
+@@ -21,6 +21,18 @@ from utils.logger import print_log
+ from evaluation.dG.openmm_relaxer import ForceFieldMinimizer
  
-+def score_proximity_energy(X, mask_generate, batch_ids, scores):
-+    """Attract generated latent positions to high-scoring receptor C-alpha atoms."""
-+    energy = X.new_zeros(())
-+    for batch_id in torch.unique(batch_ids):
-+        in_batch = batch_ids == batch_id
-+        context = in_batch & ~mask_generate
-+        generated = in_batch & mask_generate
-+        weights = scores[context].to(dtype=X.dtype)
-+        positive = weights > 0
-+        if not torch.any(positive):
-+            continue
-+        weights = weights[positive]
-+        receptor_ca = X[context, VOCAB.ca_channel_idx][positive]
-+        peptide_latent = X[generated, 0]
-+        distances = torch.cdist(peptide_latent, receptor_ca)
-+        log_weights = weights.log()
-+        soft_distance = -2.0 * (
-+            torch.logsumexp(log_weights[None, :] - distances / 2.0, dim=1)
-+            - torch.logsumexp(log_weights, dim=0)
-+        )
-+        energy = energy + (2.0 * F.softplus((soft_distance - 8.0) / 2.0)).mean()
-+    return energy
-+
-+
-+def combined_guidance_energy(model, X, mask_generate, batch_ids, scores, strength):
-+    energy = model.latent_geometry_guidance(X, mask_generate, batch_ids)
-+    if strength:
-+        energy = energy + strength * score_proximity_energy(
-+            X, mask_generate, batch_ids, scores)
-+    return energy
-+
-+
+ 
 +def peptide_coordinates_supported(blocks):
 +    """Reject divergent peptide coordinates before writing a fixed-width PDB."""
 +    for block in blocks:
@@ -57,91 +19,86 @@ index 773a539..932cb23 100644
 +
 +
  class DesignDataset(torch.utils.data.Dataset):
-@@ -42,9 +88,20 @@ class DesignDataset(torch.utils.data.Dataset):
-             epitope = json.load(fin)
--        to_str = lambda pos: f'{pos[0]}-{pos[1]}'
-         epi_map = {}
--        for chain_name, pos in epitope:
--            if chain_name not in epi_map:
--                epi_map[chain_name] = {}
--            epi_map[chain_name][to_str(pos)] = True
--        residues, position_ids = [], []
-+        for entry in epitope:
-+            if not isinstance(entry, list) or len(entry) not in (2, 3):
-+                raise ValueError(f'Invalid pocket entry: {entry}')
-+            chain_name, pos = entry[:2]
-+            score = entry[2] if len(entry) == 3 else 0.0
-+            if (not isinstance(chain_name, str) or len(chain_name) != 1
-+                    or not isinstance(pos, list) or len(pos) != 2
-+                    or type(pos[0]) is not int or not isinstance(pos[1], str)
-+                    or len(pos[1]) != 1 or not isinstance(score, (float, int))
-+                    or not math.isfinite(score) or not 0 <= score <= 1):
-+                raise ValueError(f'Invalid pocket residue or score: {entry}')
-+            chain_scores = epi_map.setdefault(chain_name, {})
-+            key = tuple(pos)
-+            if key in chain_scores:
-+                raise ValueError(f'Duplicate pocket residue: {chain_name} {pos}')
-+            chain_scores[key] = float(score)
-+        residues, position_ids, scores = [], [], []
-         chain2blocks = pdb_to_list_blocks(pdb, list(epi_map.keys()), dict_form=True)
-@@ -55,6 +112,11 @@ class DesignDataset(torch.utils.data.Dataset):
-             for i, block in enumerate(chain):  # residue
--                if to_str(block.id) in epi_map[chain_name]:
-+                if block.id in epi_map[chain_name]:
-                     residues.append(block)
-                     position_ids.append(i + 1) # position ids start from 1
--        return residues, position_ids, chain2blocks
-+                    scores.append(epi_map[chain_name][block.id])
-+        if len(residues) != sum(map(len, epi_map.values())):
-+            raise ValueError('Some pocket residues are missing from the receptor PDB')
-+        if not residues:
-+            raise ValueError('Pocket contains no receptor residues')
-+        return residues, position_ids, chain2blocks, scores
  
-@@ -80,3 +142,3 @@ class DesignDataset(torch.utils.data.Dataset):
-     def __getitem__(self, idx: int):
--        rec_blocks, rec_position_ids, rec_chain2blocks = self.get_epitope(idx)
-+        rec_blocks, rec_position_ids, rec_chain2blocks, rec_scores = self.get_epitope(idx)
-         lig_blocks = self.generate_pep_chain(idx)
-@@ -120,2 +182,3 @@ class DesignDataset(torch.utils.data.Dataset):
-             'atom_mask': atom_mask,                                         # [N, 14] or [N, 4], 1 for having records in the PDB
-+            'site_scores': torch.tensor(rec_scores + [0.0] * len(lig_blocks), dtype=torch.float),
-             'lengths': len(S),
-@@ -146,3 +209,6 @@ def openmm_relax(pdb_path):
+     MAX_N_ATOM = 14
+@@ -143,6 +155,45 @@ def openmm_relax(pdb_path):
+     return pdb_path
+ 
+ 
++def relax_designs(pdb_paths, out_dir):
++    """Keep a single bad minimization from aborting the other samples."""
++    summary_path = os.path.join(out_dir, 'summary.jsonl')
++    with open(summary_path) as handle:
++        records = [json.loads(line) for line in handle if line.strip()]
++    by_id = {record['id']: record for record in records}
++    try:
++        ray.init(num_cpus=8)
++        futures = {openmm_relax.remote(path): path for path in pdb_paths}
++        with tqdm(total=len(futures)) as pbar:
++            while futures:
++                ready, _ = ray.wait(list(futures), num_returns=1)
++                for future in ready:
++                    path = futures.pop(future)
++                    try:
++                        ray.get(future)
++                    except ray.exceptions.RayTaskError as exc:
++                        # Worker loss and a broken Ray runtime are infrastructure
++                        # failures; only errors from an individual minimizer are
++                        # recoverable candidate failures.
++                        record = by_id[splitext(basename(path))[0]]
++                        record['status'] = 'error'
++                        record['error'] = f'OpenMM relaxation failed: {exc}'
++                        quarantine = os.path.join(out_dir, 'invalid_designs')
++                        os.makedirs(quarantine, exist_ok=True)
++                        if os.path.exists(path):
++                            os.replace(path, os.path.join(quarantine, basename(path)))
++                        with open(path + '.relax_error.json', 'w') as handle:
++                            json.dump({'error': record['error']}, handle)
++                        temporary = summary_path + '.tmp'
++                        with open(temporary, 'w') as handle:
++                            for row in records:
++                                handle.write(json.dumps(row) + '\n')
++                        os.replace(temporary, summary_path)
++                    pbar.update(1)
++    finally:
++        ray.shutdown()
++
++
  def design(mode, ckpt, gpu, pdbs, epitope_defs, n_samples, out_dir,
--           lengths_range=None, seqs=None, identifiers=None, batch_size=8, num_workers=4):
-+           lengths_range=None, seqs=None, identifiers=None, batch_size=8, num_workers=4,
-+           score_guidance_strength=1.0):
-+    if not math.isfinite(score_guidance_strength) or score_guidance_strength < 0:
-+        raise ValueError('score_guidance_strength must be finite and nonnegative')
+            lengths_range=None, seqs=None, identifiers=None, batch_size=8, num_workers=4):
  
-@@ -184,2 +250,3 @@ def design(mode, ckpt, gpu, pdbs, epitope_defs, n_samples, out_dir,
+@@ -182,6 +233,7 @@ def design(mode, ckpt, gpu, pdbs, epitope_defs, n_samples, out_dir,
+     # generate peptides
+     cnt = 0
      all_pdbs = []
 +    invalid_samples = 0
      for batch in tqdm(dataloader):
-@@ -191,2 +258,7 @@ def design(mode, ckpt, gpu, pdbs, epitope_defs, n_samples, out_dir,
+         with torch.no_grad():
+             # move data
+@@ -189,10 +241,12 @@ def design(mode, ckpt, gpu, pdbs, epitope_defs, n_samples, out_dir,
+                 if hasattr(batch[k], 'to'):
+                     batch[k] = batch[k].to(device)
              # generate
-+            def guidance_energy(X, mask_generate, batch_ids):
-+                return combined_guidance_energy(
-+                    model, X, mask_generate, batch_ids, batch['site_scores'],
-+                    score_guidance_strength)
-+
++            # Rectify generated peptide geometry before PDB export.
              batch_X, batch_S, batch_pmetric = model.sample(
-@@ -196,4 +268,4 @@ def design(mode, ckpt, gpu, pdbs, epitope_defs, n_samples, out_dir,
+                 batch['X'], batch['S'],
+                 batch['mask'], batch['position_ids'],
+                 batch['lengths'], batch['atom_mask'],
++                idealize=True,
                  L=batch['L'], sample_opt={
--                    'energy_func': 'default',
--                    'energy_lambda': 0.5 if mode == 'struct_pred' else 0.8
-+                    'energy_func': guidance_energy,
-+                    'energy_lambda': 1.0
-                 }
-@@ -219,5 +291,3 @@ def design(mode, ckpt, gpu, pdbs, epitope_defs, n_samples, out_dir,
+                     'energy_func': 'default',
+                     'energy_lambda': 0.5 if mode == 'struct_pred' else 0.8
+@@ -217,27 +271,34 @@ def design(mode, ckpt, gpu, pdbs, epitope_defs, n_samples, out_dir,
+             list_blocks.append(lig_blocks)
+             chain_names.append(pep_chain_id)
              out_pdb = os.path.join(out_dir, expand_ids[cnt] + '.pdb')
 -            list_blocks_to_pdb(list_blocks, chain_names, out_pdb)
 -            all_pdbs.append(out_pdb)
 -            result_summary.write(json.dumps({
 +            record = {
                  'id': expand_ids[cnt],
-@@ -226,3 +296,16 @@ def design(mode, ckpt, gpu, pdbs, epitope_defs, n_samples, out_dir,
+                 'rec_chains': list(rec_chain2blocks.keys()),
+                 'pep_chain': pep_chain_id,
                  'pep_seq': ''.join([VOCAB.abrv_to_symbol(block.abrv) for block in lig_blocks])
 -            }) + '\n')
 +            }
@@ -159,34 +116,49 @@ index 773a539..932cb23 100644
 +                all_pdbs.append(out_pdb)
 +            result_summary.write(json.dumps(record) + '\n')
              result_summary.flush()
-@@ -232 +315,3 @@ def design(mode, ckpt, gpu, pdbs, epitope_defs, n_samples, out_dir,
+             cnt += 1
+     result_summary.close()
+ 
 +    if invalid_samples:
 +        print_log(f'Skipped {invalid_samples} invalid coordinate samples; see {out_dir}/summary.jsonl', level='WARN')
      print_log(f'Running openmm relaxation...')
-@@ -254,2 +339,4 @@ def parse():
-     parser.add_argument('--gpu', type=int, default=0, help='GPU to use')
-+    parser.add_argument('--score-guidance-strength', type=float, default=1.0,
-+                        help='Strength of score-weighted spatial guidance')
-     return parser.parse_args()
-@@ -272,3 +359,4 @@ if __name__ == '__main__':
+-    ray.init(num_cpus=8)
+-    futures = [openmm_relax.remote(path) for path in all_pdbs]
+-    pbar = tqdm(total=len(futures))
+-    while len(futures) > 0:
+-       done_ids, futures = ray.wait(futures, num_returns=1)
+-       for done_id in done_ids:
+-            done_path = ray.get(done_id)
+-            pbar.update(1)
++    if all_pdbs:
++        relax_designs(all_pdbs, out_dir)
+     print_log(f'Done')
+ 
+ 
+@@ -271,4 +332,4 @@ if __name__ == '__main__':
+         identifiers=[os.path.basename(os.path.splitext(args.pdb)[0])], # file name (name of each output candidate)
          lengths_range=[(args.length_min, args.length_max)] if args.mode == 'codesign' else None,    # range of acceptable peptide lengths, left inclusive, right exclusive
--        seqs=[args.peptide_seq] if args.mode == 'struct_pred' else None                             # peptide sequences for structure prediction
+         seqs=[args.peptide_seq] if args.mode == 'struct_pred' else None                             # peptide sequences for structure prediction
 -    )
 \ No newline at end of file
-+        seqs=[args.peptide_seq] if args.mode == 'struct_pred' else None,                            # peptide sequences for structure prediction
-+        score_guidance_strength=args.score_guidance_strength
 +    )
-diff --git a/models/LDM/diffusion/transition.py b/models/LDM/diffusion/transition.py
-index 71d6cce..1a654b6 100644
---- a/models/LDM/diffusion/transition.py
-+++ b/models/LDM/diffusion/transition.py
-@@ -96,8 +96,4 @@ class ContinuousTransition(nn.Module):
-         if guidance is not None:
--            eps_p = eps_p - torch.sqrt(1 - alpha_bar).view(*expand_shape) * guidance
-+            eps_p = eps_p - torch.sqrt(1 - alpha_bar).view(*expand_shape) * guidance_weight * guidance
+diff --git a/models/LDM/ldm.py b/models/LDM/ldm.py
+index 10d404e..c61534d 100644
+--- a/models/LDM/ldm.py
++++ b/models/LDM/ldm.py
+@@ -156,6 +156,7 @@ class LDMPepDesign(nn.Module):
+         },
+         return_tensor=False,
+         optimize_sidechain=True,
++        idealize=False,
+     ):
+         self.autoencoder.eval()
+         # diffusion sample
+@@ -202,6 +203,7 @@ class LDMPepDesign(nn.Module):
+             X, S, mask, position_ids, lengths, atom_mask,
+             given_laten_H=H_0, given_latent_X=X_0, return_tensor=return_tensor,
+             allow_unk=False, optimize_sidechain=optimize_sidechain,
++            idealize=idealize,
+             n_iter=autoencoder_n_iter
+         )
  
--        # if guidance is not None:
--        #     p_next = c0 * (p_t - c1 * eps_p) + sigma * z + sigma * sigma * guidance_weight * guidance
--        # else:
--        #     p_next = c0 * (p_t - c1 * eps_p) + sigma * z
-         p_next = c0 * (p_t - c1 * eps_p) + sigma * z

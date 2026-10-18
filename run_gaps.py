@@ -25,7 +25,7 @@ class ScoredResidue:
         return self.chain, self.number, self.icode
 
     def as_pepglad_entry(self):
-        return [self.chain, [self.number, self.icode], self.score]
+        return [self.chain, [self.number, self.icode]]
 
 
 @dataclass(frozen=True)

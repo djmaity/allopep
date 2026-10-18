@@ -37,11 +37,11 @@ def inspect_site(site_dir):
     if len(ids) != len(set(ids)):
         raise ValueError(f'Duplicate IDs in {summary_path}')
     if {path.stem for path in site_dir.glob('*.pdb')} != {
-            record['id'] for record in records if record.get('status') != 'invalid'}:
+            record['id'] for record in records if record.get('status') not in ('invalid', 'error')}:
         raise ValueError(f'PDB files do not match {summary_path}')
     relaxed, pending, invalid = [], [], []
     for record in records:
-        if record.get('status') == 'invalid':
+        if record.get('status') in ('invalid', 'error'):
             continue
         path = site_dir / (record['id'] + '.pdb')
         with path.open(encoding='utf-8') as handle:

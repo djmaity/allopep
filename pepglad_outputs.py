@@ -51,7 +51,7 @@ def load_design_outputs(generated, *, exact=False, summary_paths=()):
         for summary_path, records in summaries.items():
             actual = {path.stem for path in summary_path.parent.glob('*.pdb')}
             expected = {identifier for identifier, record in records.items()
-                        if record.get('status') != 'invalid'}
+                        if record.get('status') not in ('invalid', 'error')}
             if actual != expected:
                 raise ValueError(f'PepGLAD PDBs do not match {summary_path}: '
                                  f'missing={sorted(expected - actual)}, '
@@ -68,7 +68,7 @@ def load_design_outputs(generated, *, exact=False, summary_paths=()):
             raise ValueError(f'Duplicate PepGLAD site/sample: {site}/{sample}')
         seen.add((site, sample))
         record = records[path.stem]
-        if record.get('status') == 'invalid':
+        if record.get('status') in ('invalid', 'error'):
             raise ValueError(f'Invalid PepGLAD design still has a PDB: {path}')
         try:
             sequence = record['pep_seq']

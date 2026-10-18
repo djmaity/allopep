@@ -36,8 +36,8 @@ def parse_args(argv=None):
         description='Pipeline for allosteric peptide design',
     )
     parser.add_argument('pdb_file')
-    parser.add_argument('-r', '--max_rank', default=3, type=_max_rank,
-                        help='Number of separated GAPS sites to design (default: 3; "all" for every site)')
+    parser.add_argument('-r', '--max_rank', default='all', type=_max_rank,
+                        help='Number of ranked GAPS pockets to design (default: "all"; or a positive integer)')
     parser.add_argument('-l', '--length_min', default=5, type=int,
                         help='Minimum length of the predicted peptide')
     parser.add_argument('-L', '--length_max', default=10, type=int,

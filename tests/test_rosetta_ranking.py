@@ -8,7 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from allopep import (find_existing_pepglad_outputs, prepare_input_pdb,
+from allopep import (find_existing_pepglad_outputs, parse_args, prepare_input_pdb,
                      main, rank_pepglad_outputs, run_openstructure_validation,
                      run_pepglad, write_pymol_session)
 from pepglad_outputs import DesignOutput, load_design_outputs
@@ -341,6 +341,12 @@ class RosettaRankingTests(unittest.TestCase):
              self.assertRaisesRegex(FileNotFoundError, 'InterfaceAnalyzer missing'):
             main(['target.pdb'])
         prepare.assert_not_called()
+
+    def test_max_rank_cli_defaults_to_all_and_accepts_a_limit(self):
+        self.assertEqual(parse_args(['target.pdb']).max_rank, 'all')
+        self.assertEqual(parse_args(['target.pdb', '--max_rank', 'all']).max_rank, 'all')
+        self.assertEqual(parse_args(['target.pdb', '--max_rank', '2']).max_rank, 2)
+
 
     def test_chain_mismatch_records_error_without_running_rosetta(self):
         with tempfile.TemporaryDirectory() as directory:

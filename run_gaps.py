@@ -1,4 +1,4 @@
-"""Run GAPS and choose local receptor contexts from its residue scores."""
+"""Run GAPS and group high-scoring surface residues into connected pockets."""
 
 import json
 import math
@@ -11,6 +11,11 @@ import numpy as np
 from Bio.PDB import PDBParser
 
 
+_MINIMUM_GAPS_SCORE = 0.5
+_MINIMUM_POCKET_SASA = 0.0
+_POCKET_CONNECTION_RADIUS = 8.0
+
+
 @dataclass(frozen=True)
 class ScoredResidue:
     chain: str
@@ -18,7 +23,7 @@ class ScoredResidue:
     icode: str
     score: float
     ca: tuple[float, float, float]
-    relative_sasa: float
+    sasa: float  # Absolute solvent-accessible area in Å².
 
     @property
     def key(self):
@@ -30,6 +35,8 @@ class ScoredResidue:
 
 @dataclass(frozen=True)
 class GuidanceContext:
+    """A connected pocket and its highest-scoring member as a reference."""
+
     seed: ScoredResidue
     residues: tuple[ScoredResidue, ...]
 
@@ -37,31 +44,11 @@ class GuidanceContext:
         return [residue.as_pepglad_entry() for residue in self.residues]
 
 
-@dataclass(frozen=True)
-class GuidanceSelection:
-    max_rank: int | str = 3
-    surface_rsa_threshold: float = 0.2
-    seed_separation: float = 15.0
-    context_radius: float = 10.0
-    max_context_size: int = 48
-
-    def __post_init__(self):
-        if self.max_rank != 'all' and (type(self.max_rank) is not int or self.max_rank < 1):
-            raise ValueError('max_rank must be a positive integer or "all"')
-        if (not math.isfinite(self.surface_rsa_threshold)
-                or not 0 <= self.surface_rsa_threshold <= 1):
-            raise ValueError('surface_rsa_threshold must be between 0 and 1')
-        if (not math.isfinite(self.seed_separation) or self.seed_separation <= 0
-                or not math.isfinite(self.context_radius) or self.context_radius <= 0
-                or type(self.max_context_size) is not int or self.max_context_size < 3):
-            raise ValueError('Invalid spatial context parameters')
-
-
-def _relative_sasa(residue, areas):
+def _residue_sasa(residue, areas):
     chain = residue.get_parent().id
     _, number, icode = residue.id
     try:
-        value = areas[chain][f'{number}{icode.strip()}'].relativeTotal
+        value = areas[chain][f'{number}{icode.strip()}'].total
     except KeyError:
         return 0.0
     return value if math.isfinite(value) else 0.0
@@ -113,7 +100,7 @@ def _scored_residue(record, model, areas, seen):
         raise ValueError(f'GAPS C-alpha differs from input PDB: {key}')
     return ScoredResidue(
         chain, number, icode, float(score), tuple(map(float, ca)),
-        _relative_sasa(residue, areas),
+        _residue_sasa(residue, areas),
     )
 
 
@@ -139,42 +126,49 @@ def load_scored_residues(input_pdb, scores_json):
     return scored
 
 
-def select_contexts(residues, selection):
-    """Choose scored local contexts without reading files or running GAPS."""
-    candidates = sorted(
-        (r for r in residues if r.relative_sasa >= selection.surface_rsa_threshold),
-        key=lambda r: (-r.score, r.key),
+def select_contexts(residues, max_rank='all'):
+    """Rank groups with GAPS score >0.5, absolute SASA >0 and C-alpha links <=8 Å."""
+    if max_rank != 'all' and (type(max_rank) is not int or max_rank < 1):
+        raise ValueError('max_rank must be a positive integer or "all"')
+    eligible = sorted(
+        (r for r in residues if r.score > _MINIMUM_GAPS_SCORE
+         and r.sasa > _MINIMUM_POCKET_SASA),
+        key=lambda r: r.key,
     )
+    coords = np.asarray([r.ca for r in eligible], dtype=float)
+    visited = np.zeros(len(eligible), dtype=bool)
     contexts = []
-    for seed in candidates:
-        if any(np.linalg.norm(np.subtract(seed.ca, ctx.seed.ca)) < selection.seed_separation
-               for ctx in contexts):
+    for start in range(len(eligible)):
+        if visited[start]:
             continue
-        nearby = sorted(
-            (r for r in residues
-             if np.linalg.norm(np.subtract(seed.ca, r.ca)) <= selection.context_radius),
-            key=lambda r: (np.linalg.norm(np.subtract(seed.ca, r.ca)),
-                           -r.score, r.key),
-        )[:selection.max_context_size]
-        if len(nearby) < 3 or not any(r.score > 0 for r in nearby):
+        visited[start] = True
+        frontier = [start]
+        members = []
+        while frontier:
+            index = frontier.pop()
+            members.append(eligible[index])
+            distances = np.linalg.norm(coords - coords[index], axis=1)
+            neighbors = np.flatnonzero(
+                ~visited & (distances <= _POCKET_CONNECTION_RADIUS))
+            visited[neighbors] = True
+            frontier.extend(neighbors.tolist())
+        if len(members) < 2:
             continue
-        contexts.append(GuidanceContext(seed, tuple(sorted(nearby, key=lambda r: r.key))))
-        if selection.max_rank != 'all' and len(contexts) >= selection.max_rank:
-            break
+        members.sort(key=lambda r: r.key)
+        seed = min(members, key=lambda r: (-r.score, r.key))
+        contexts.append(GuidanceContext(seed, tuple(members)))
     if not contexts:
         raise ValueError('No usable GAPS-guided receptor contexts found')
-    return contexts
+    contexts.sort(key=lambda ctx: (
+        -math.fsum(r.score for r in ctx.residues) / len(ctx.residues),
+        ctx.residues[0].key,
+    ))
+    return contexts if max_rank == 'all' else contexts[:max_rank]
 
 
-def select_guidance_contexts(
-    input_pdb, scores_json, max_rank=3, surface_rsa_threshold=0.2,
-    seed_separation=15.0, context_radius=10.0, max_context_size=48,
-):
-    """Load GAPS scores, then choose separated surface contexts."""
-    selection = GuidanceSelection(
-        max_rank, surface_rsa_threshold, seed_separation,
-        context_radius, max_context_size)
-    return select_contexts(load_scored_residues(input_pdb, scores_json), selection)
+def select_guidance_contexts(input_pdb, scores_json, max_rank='all'):
+    """Load full-precision scores and select connected surface pockets."""
+    return select_contexts(load_scored_residues(input_pdb, scores_json), max_rank)
 
 
 def run_gaps(pdb_filepath, out_dir='.', pytorch_device='cuda'):

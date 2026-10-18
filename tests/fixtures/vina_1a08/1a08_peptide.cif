@@ -1,0 +1,98 @@
+data_1a08_peptide
+_entry.id '1a08_peptide'
+
+_cell.entry_id '1a08_peptide'
+_cell.length_a 1
+_cell.length_b 1
+_cell.length_c 1
+_cell.angle_alpha 90
+_cell.angle_beta 90
+_cell.angle_gamma 90
+
+_symmetry.entry_id '1a08_peptide'
+_symmetry.space_group_name_H-M ''
+
+
+
+
+
+loop_
+_chem_comp.id
+_chem_comp.type
+GLU .
+TYR .
+
+loop_
+_struct_asym.id
+_struct_asym.entity_id
+Cxp ?
+
+
+
+loop_
+_atom_type.symbol
+H
+C
+N
+O
+
+
+loop_
+_atom_site.group_PDB
+_atom_site.id
+_atom_site.type_symbol
+_atom_site.label_atom_id
+_atom_site.label_alt_id
+_atom_site.label_comp_id
+_atom_site.label_asym_id
+_atom_site.label_entity_id
+_atom_site.label_seq_id
+_atom_site.pdbx_PDB_ins_code
+_atom_site.Cartn_x
+_atom_site.Cartn_y
+_atom_site.Cartn_z
+_atom_site.occupancy
+_atom_site.B_iso_or_equiv
+_atom_site.pdbx_formal_charge
+_atom_site.auth_seq_id
+_atom_site.auth_asym_id
+_atom_site.pdbx_PDB_model_num
+ATOM 1 N N . TYR Cxp . . ? 41.422 6.929 23.534 1 15.39 ? 1 C 1
+ATOM 2 C CA . TYR Cxp . . ? 41.465 7.797 22.296 1 17.53 ? 1 C 1
+ATOM 3 C C . TYR Cxp . . ? 40.239 7.41 21.501 1 13.42 ? 1 C 1
+ATOM 4 O O . TYR Cxp . . ? 39.708 6.321 21.772 1 15.15 ? 1 C 1
+ATOM 5 C CB . TYR Cxp . . ? 42.76 7.6 21.443 1 14.75 ? 1 C 1
+ATOM 6 C CG . TYR Cxp . . ? 43.994 8.025 22.191 1 0 ? 1 C 1
+ATOM 7 C CD1 . TYR Cxp . . ? 44.672 7.136 23.039 1 0 ? 1 C 1
+ATOM 8 C CD2 . TYR Cxp . . ? 44.49 9.327 22.046 1 0 ? 1 C 1
+ATOM 9 C CE1 . TYR Cxp . . ? 45.782 7.57 23.778 1 0 ? 1 C 1
+ATOM 10 C CE2 . TYR Cxp . . ? 45.68 9.717 22.677 1 0 ? 1 C 1
+ATOM 11 C CZ . TYR Cxp . . ? 46.3 8.85 23.579 1 0 ? 1 C 1
+ATOM 12 O OH . TYR Cxp . . ? 47.461 9.261 24.276 1 0 ? 1 C 1
+ATOM 13 H H1 . TYR Cxp . . ? 42.125 7.111 24.049 1 15.39 ? 1 C 1
+ATOM 14 H H2 . TYR Cxp . . ? 40.673 7.093 23.986 1 15.39 ? 1 C 1
+ATOM 15 H H3 . TYR Cxp . . ? 41.443 6.072 23.296 1 15.39 ? 1 C 1
+ATOM 16 H HA . TYR Cxp . . ? 41.476 8.735 22.544 1 17.53 ? 1 C 1
+ATOM 17 H HB2 . TYR Cxp . . ? 42.841 6.667 21.189 1 14.75 ? 1 C 1
+ATOM 18 H HB3 . TYR Cxp . . ? 42.687 8.112 20.622 1 14.75 ? 1 C 1
+ATOM 19 H HD1 . TYR Cxp . . ? 44.384 6.255 23.111 1 0 ? 1 C 1
+ATOM 20 H HD2 . TYR Cxp . . ? 44.024 9.94 21.525 1 0 ? 1 C 1
+ATOM 21 H HE1 . TYR Cxp . . ? 46.174 7.003 24.402 1 0 ? 1 C 1
+ATOM 22 H HE2 . TYR Cxp . . ? 46.054 10.549 22.496 1 0 ? 1 C 1
+ATOM 23 H HH . TYR Cxp . . ? 47.655 10.049 24.058 1 0 ? 1 C 1
+ATOM 24 N N . GLU Cxp . . ? 39.773 8.252 20.583 1 14.85 ? 2 C 1
+ATOM 25 C CA . GLU Cxp . . ? 38.732 7.947 19.633 1 16.19 ? 2 C 1
+ATOM 26 C C . GLU Cxp . . ? 39.409 7.286 18.383 1 19.94 ? 2 C 1
+ATOM 27 O O . GLU Cxp . . ? 40.667 7.144 18.405 1 19.92 ? 2 C 1
+ATOM 28 C CB . GLU Cxp . . ? 38.076 9.3 19.246 1 21.28 ? 2 C 1
+ATOM 29 C CG . GLU Cxp . . ? 37.586 10.2 20.425 1 18.7 ? 2 C 1
+ATOM 30 C CD . GLU Cxp . . ? 36.44 9.655 21.295 1 16.92 ? 2 C 1
+ATOM 31 O OE1 . GLU Cxp . . ? 35.285 9.612 20.828 1 21.61 ? 2 C 1
+ATOM 32 O OE2 . GLU Cxp . . ? 36.729 9.467 22.506 1 15.8 ? 2 C 1
+ATOM 33 O OXT . GLU Cxp . . ? 38.691 6.939 17.414 1 0 ? 2 C 1
+ATOM 34 H H . GLU Cxp . . ? 40.075 9.053 20.5 1 14.85 ? 2 C 1
+ATOM 35 H HA . GLU Cxp . . ? 38.062 7.342 19.988 1 16.19 ? 2 C 1
+ATOM 36 H HB2 . GLU Cxp . . ? 38.715 9.808 18.722 1 21.28 ? 2 C 1
+ATOM 37 H HB3 . GLU Cxp . . ? 37.318 9.116 18.669 1 21.28 ? 2 C 1
+ATOM 38 H HG2 . GLU Cxp . . ? 38.344 10.378 21.003 1 18.7 ? 2 C 1
+ATOM 39 H HG3 . GLU Cxp . . ? 37.305 11.052 20.056 1 18.7 ? 2 C 1

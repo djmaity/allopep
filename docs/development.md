@@ -17,7 +17,8 @@ The pipeline is the `allopep` package, run as `python -m allopep`.
 | `allopep/fileio.py` | Atomic file replacement and content hashing. |
 | `allopep/gaps_predict.py` | GAPS inference and full-precision residue score export. |
 | `allopep/gaps.py` | Residue mapping, accessibility, connected pockets, and ranking. |
-| `allopep/sampling.py` | Per-site budgets, adaptive rounds, selection, integrity checks, and rejection cleanup. |
+| `allopep/sampling.py` | Shared or per-site budgets, adaptive rounds, selection, and integrity checks. |
+| `allopep/peptide_exports.py` | Selected-complex copies and the peptide/pocket/scoring CSV. |
 | `allopep/process_control.py` | Logged subprocess execution and deadline/process-tree handling. |
 | `allopep/outputs.py` | Summary parsing, chain/sequence metadata, round IDs, and deletion journals. |
 | `allopep/validation.py` | OpenStructure/CCTBX measurements, policy, parallel workers, and reports. |
@@ -93,36 +94,41 @@ patch. Preserve unrelated local changes and expensive experiment artifacts.
 
 ## Build and preview the documentation
 
-The documentation needs only a separate Python environment; it does not need
-GAPS, PepGLAD, Vina, or the scientific Conda dependencies:
+Build and preview the documentation in the `allopep` Conda environment.
+MkDocs and its Material theme are declared in `environment.yml`. Update
+an existing environment before building:
 
 ```bash
-python -m venv .venv-docs
-.venv-docs/bin/python -m pip install -r requirements-docs.txt
-.venv-docs/bin/python -m mkdocs build --strict
+conda env update -n allopep -f environment.yml
+conda run --no-capture-output -n allopep \
+  python -m mkdocs build --strict
 ```
 
 The static HTML site is written to `site/`, with direct page links such as
 `validation.html`. After building, you can open `site/index.html` to browse
-the pages directly without directory listings. Both `site/` and `.venv-docs/`
-are ignored by Git. For the full preview, including search, use the local server:
+the pages directly without directory listings. The `site/` directory is
+ignored by Git. For the full preview, including search, use the local server:
 
 ```bash
-.venv-docs/bin/python -m mkdocs serve
+conda run --no-capture-output -n allopep python -m mkdocs serve
 ```
 
-Open `http://127.0.0.1:8000/`. Search, navigation, code-copy buttons, and a
-light/dark toggle are provided by Material for MkDocs. Publishing is a separate
-step; the configuration does not presume a hosted site URL.
+Open `http://127.0.0.1:8000/`. Material for MkDocs provides navigation and
+search with its default settings. Publishing is a separate step; the
+configuration does not presume a hosted site URL.
 
-The dependency file constrains compatible MkDocs and Material major versions;
-it is not a complete dependency lock. Record `pip freeze` when exact toolchain
-reproduction is needed.
+The environment declaration constrains compatible MkDocs and Material
+major versions; it is not a complete dependency lock. Record
+`conda env export -n allopep` when toolchain reproduction is needed.
 
 ## Documentation maintenance
 
-Use relative Markdown links between pages under `docs/`. Add new pages to
-`mkdocs.yml`, and run the strict build to catch missing pages and anchors.
+Use relative Markdown links between pages under `docs/`. MkDocs discovers
+pages automatically and uses their first heading as the navigation title;
+`mkdocs.yml` has no explicit navigation entries. Add new Markdown pages
+directly under `docs/` and update the guide links on the [home page](index.md).
+Use standard Markdown formatting and run `python -m mkdocs build --strict`
+before committing documentation changes.
 
 Update related documentation together when behavior changes:
 

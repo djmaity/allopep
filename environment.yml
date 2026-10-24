@@ -12,6 +12,8 @@ dependencies:
   - freesasa=2.2.1
   - gemmi=0.7.5
   - meeko=0.8.0
+  - mkdocs>=1.6,<2
+  - mkdocs-material>=9.6,<10
   - numpy=1.26.4
   - openstructure=2.11.1
   - pandas=2.3.3

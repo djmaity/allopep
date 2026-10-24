@@ -9,12 +9,13 @@ from pathlib import Path
 from . import gaps
 from .layout import REPO_ROOT, OutputLayout
 from .outputs import load_round_outputs, site_rounds
+from .peptide_exports import export_peptides
 from .process_control import run_logged
 from .pymol_session import (write_allosteric_site_visualization,
                             write_pymol_session)
 from .ranking import check_vina_dependencies, rank_pepglad_outputs
 from .sampling import (SamplingConfig, SamplingController, require_resume,
-                       sampling_lock)
+                       sampling_lock, select_valid_designs)
 from .validation_reports import read_rows, run_ost, write_manifest
 
 
@@ -43,11 +44,19 @@ def parse_args(argv=None):
     parser.add_argument('-L', '--length_max', default=10, type=int,
                         help='Maximum length of the predicted peptide')
     parser.add_argument('-n', '--num_samples', default=10, type=int,
-                        help='Number of physically valid structures per site (default: 10)')
+                        help='Number of physically valid complexes '
+                        '(default: 10 across all sites)')
+    parser.add_argument('--peptides-per-site', action='store_true',
+                        help='Request -n valid complexes per site instead '
+                        'of across all sites')
     parser.add_argument('--attempt-multiplier', default=1000, type=int,
-                        help='Attempt budget per site is this positive integer times -n (default: 1000)')
+                        help='Attempt budget is this positive integer times '
+                        '-n; per site with --peptides-per-site '
+                        '(default: 1000)')
     parser.add_argument('--max_num_peptides', default=None, type=int,
-                        help='Absolute attempt cap per site; overrides --attempt-multiplier times -n')
+                        help='Absolute attempt cap, per site with '
+                        '--peptides-per-site; overrides '
+                        '--attempt-multiplier times -n')
     parser.add_argument('--round-timeout-seconds', default=3600, type=int,
                         help='Deadline for generation, relaxation and validation of one round (default: 3600)')
     parser.add_argument('-c', '--peptide-chain', default=None,
@@ -161,7 +170,7 @@ def find_existing_pepglad_outputs(layout):
 
 
 def sampling_config(args):
-    """Resolve the per-site attempt budget and validate the settings."""
+    """Resolve the attempt budget and validate the settings."""
     if args.attempt_multiplier < 1:
         raise ValueError('--attempt-multiplier must be positive')
     return SamplingConfig(
@@ -171,6 +180,7 @@ def sampling_config(args):
                       else args.attempt_multiplier * args.num_samples),
         round_timeout_seconds=args.round_timeout_seconds,
         peptide_chain=args.peptide_chain, resume=args.resume,
+        peptides_per_site=args.peptides_per_site,
     )
 
 
@@ -195,6 +205,13 @@ def main(argv=None):
         print(f'Allosteric site visualization: {session.with_suffix(".pml")} and {session}')
         valid_designs = run_openstructure_validation(
             generated, layout.score_dir, layout, config.peptide_chain, pdb_file)
+        valid_designs = select_valid_designs(valid_designs, config)
+        sites = {design.site for design in generated}
+        sites.update(site for pocket in layout.sites_dir.glob('*.json')
+                     if (site := layout.site_number(pocket)) is not None)
+        target = config.num_samples * (len(sites)
+                                       if config.peptides_per_site else 1)
+        shortfall = len(valid_designs) < target
     else:
         gaps.run_gaps(pdb_file, out_dir=str(layout.root))
         contexts = gaps.select_guidance_contexts(
@@ -206,26 +223,36 @@ def main(argv=None):
         shortfall = result.shortfall
         print(f'Sampling summary: {result.summary_path}')
 
-    pymol_session = write_pymol_session(valid_designs, layout)
-    print(f'PyMOL session: {pymol_session}')
-    if args.validate_existing:
-        return 0
-    if not valid_designs:
+    if not valid_designs and not args.validate_existing:
         for report in (layout.vina_ranked, layout.vina_results,
                        layout.vina_manifest):
             report.unlink(missing_ok=True)
+
+    scored, scoring_error, ranked = False, '', []
+    try:
+        pymol_session = write_pymol_session(valid_designs, layout)
+        print(f'PyMOL session: {pymol_session}')
+        if valid_designs and not args.validate_existing:
+            scored = True
+            ranked = rank_pepglad_outputs(valid_designs, layout)
+    except Exception as exc:
+        scoring_error = str(exc)
+        raise
+    finally:
+        table = export_peptides(valid_designs, layout, pdb_file,
+                                scored=scored, scoring_error=scoring_error)
+        print(f'Selected valid complexes: {layout.valid_complexes_dir}')
+        print(f'Peptide table: {table}')
+
+    if not valid_designs:
         print('No PepGLAD structures passed OpenStructure validation; '
               f'see {validation_csv}')
-        if shortfall:
-            print('Sampling stopped at --max_num_peptides; exiting with status 2.')
-        return 2 if shortfall else 0
-
-    ranked = rank_pepglad_outputs(valid_designs, layout)
-    failures = len(valid_designs) - len(ranked)
-    print(f'Ranked {len(ranked)} PepGLAD structures by Vina score_total '
-          f'({failures} scoring failures); '
-          f'see {layout.vina_ranked} and {layout.vina_results}')
+    elif not args.validate_existing:
+        failures = len(valid_designs) - len(ranked)
+        print(f'Ranked {len(ranked)} PepGLAD structures by Vina score_total '
+              f'({failures} scoring failures); '
+              f'see {layout.vina_ranked} and {layout.vina_results}')
     if shortfall:
-        print('One or more sites exhausted --max_num_peptides before reaching '
-              'the valid-structure target; partial results were retained.')
+        print('The requested valid-complex count was not reached; '
+              'partial results were retained. Exiting with status 2.')
     return 2 if shortfall else 0

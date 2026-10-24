@@ -59,6 +59,10 @@ class OutputLayout:
         return self.root / f'{self.prefix}_sampling_summary.json'
 
     @property
+    def peptides_csv(self):
+        return self.root / f'{self.prefix}_peptides.csv'
+
+    @property
     def lock_file(self):
         return self.root / '.sampling.lock'
 
@@ -71,6 +75,10 @@ class OutputLayout:
     @property
     def designs_dir(self):
         return self.root / f'{self.prefix}_PepGLAD_outputs'
+
+    @property
+    def valid_complexes_dir(self):
+        return self.root / f'{self.prefix}_valid_complexes'
 
     @property
     def score_dir(self):
@@ -87,6 +95,10 @@ class OutputLayout:
 
     def round_dir(self, site, index):
         return self.site_dir(site) / f'round_{index:06d}'
+
+    def valid_complex_file(self, site, sample):
+        return (self.valid_complexes_dir / f'site_{site}'
+                / f'{self.prefix}_site_{site}_peptide_{sample}.pdb')
 
     def site_number(self, path):
         """Recover a site number from a design or pocket path, or None."""

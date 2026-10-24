@@ -48,7 +48,7 @@ the hash of the actual `codesign.ckpt` used for a run.
 
 | Environment | Responsibility | Selected dependencies |
 | --- | --- | --- |
-| `allopep` | Pipeline control, accessibility, validation, visualization, Vina scoring | Python 3.12, OpenStructure 2.11.1, CCTBX 2025.9, chem_data 2026.9, FreeSASA, PyMOL 3.1.0, Meeko 0.8.0, Vina 1.2.7 |
+| `allopep` | Pipeline control, accessibility, validation, visualization, Vina scoring, tests, documentation | Python 3.12, OpenStructure 2.11.1, CCTBX 2025.9, chem_data 2026.9, FreeSASA, PyMOL 3.1.0, Meeko 0.8.0, Vina 1.2.7, MkDocs, Material for MkDocs |
 | `gaps` | GAPS inference | Python 3.10, PyTorch 1.13.1, PyTorch CUDA 11.7 |
 | `PepGLAD` | Peptide generation and OpenMM relaxation | The patched upstream `PepGLAD/env.yaml`, plus Ray's default extras |
 
@@ -101,7 +101,8 @@ conda run --no-capture-output -n allopep mmtbx.rebuild_rotarama_cache
 ```
 
 See [Troubleshooting](troubleshooting.md) for missing data, PyMOL, and dependency
-mismatch errors. To work on the documentation alone, use the separate
-[documentation environment](development.md#build-and-preview-the-documentation).
+mismatch errors. Build and preview the documentation in the `allopep` Conda
+environment; see the
+[documentation commands](development.md#build-and-preview-the-documentation).
 
 Implementation: `install.sh` and `environment.yml`.

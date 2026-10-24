@@ -5,6 +5,10 @@ sampling, visualization, and scoring code. Use the environment appropriate to
 each component, and keep documentation aligned with the actual CLI and saved
 artifact formats.
 
+Use the `allopep` Conda environment for the main test suite and documentation
+builds. Conda makes both Python packages and command-line tools such as
+Meeko's receptor preparer available to these commands.
+
 ## Source map
 
 The pipeline is the `allopep` package, run as `python -m allopep`.
@@ -127,8 +131,9 @@ Use relative Markdown links between pages under `docs/`. MkDocs discovers
 pages automatically and uses their first heading as the navigation title;
 `mkdocs.yml` has no explicit navigation entries. Add new Markdown pages
 directly under `docs/` and update the guide links on the [home page](index.md).
-Use standard Markdown formatting and run `python -m mkdocs build --strict`
-before committing documentation changes.
+Use standard Markdown formatting and run the
+[strict documentation build](#build-and-preview-the-documentation) in
+`allopep` before committing documentation changes.
 
 Update related documentation together when behavior changes:
 

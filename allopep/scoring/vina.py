@@ -13,12 +13,12 @@ from typing import Any
 
 import numpy as np
 
-from .models import BoxSpec
-
 SCORE_TERMS = (
     "total", "ligand_inter",
     "flex_receptor_inter", "other_inter", "flex_receptor_intra",
     "ligand_intra", "torsional", "ligand_intra_best_pose",)
+# The box always comes from the supplied peptide's own bounds.
+BOX_SOURCE = "union_of_peptide_bounds"
 
 
 @dataclass(frozen=True)
@@ -165,21 +165,13 @@ def box_from_coordinates(
     return center, size
 
 
-def resolve_box(metrics: Sequence[PoseMetrics], box: BoxSpec, padding: float
+def resolve_box(metrics: Sequence[PoseMetrics], padding: float
 ) -> tuple[list[float], list[float], str]:
-    """Resolve and validate an explicit box or the union of peptide
-    bounds."""
+    """Resolve and validate a box around the union of peptide bounds."""
     coordinate_sets = [item.coordinates for item in metrics]
-    if box.is_explicit:
-        assert box.center is not None and box.size is not None
-        center = [float(value) for value in box.center]
-        size = [float(value) for value in box.size]
-        source = "explicit"
-    else:
-        center, size = box_from_coordinates(coordinate_sets, padding)
-        source = "union_of_peptide_bounds"
+    center, size = box_from_coordinates(coordinate_sets, padding)
     validate_box(center, size, coordinate_sets)
-    return center, size, source
+    return center, size, BOX_SOURCE
 
 
 def validate_box(center: Sequence[float], size: Sequence[float],
@@ -205,43 +197,12 @@ def validate_box(center: Sequence[float], size: Sequence[float],
                     "At least one peptide atom is outside the map box")
 
 
-class VinaAdapter:
-    """Contain the installed Vina wrapper's raw-score API in one place."""
-
-    def __init__(self, receptor_pdbqt: Path, center: Sequence[float],
-                 box_size: Sequence[float], spacing: float, cpu: int) -> None:
-        try:
-            from vina import Vina
-        except ImportError as exc:
-            raise RuntimeError("The Python package 'vina' is required") from exc
-        self.engine: Any | None = Vina(sf_name="vina", cpu=cpu, verbosity=0)
-        self.engine.set_receptor(str(receptor_pdbqt))
-        # Build all atom-type maps before loading residue fragments.
-        self.engine.compute_vina_maps(
-            center=list(center), box_size=list(box_size), spacing=spacing,
-            force_even_voxels=True)
-
-    def score_raw(self, ligand: str) -> list[float]:
-        """Read unrounded native terms before summing fragment energies."""
-        if self.engine is None:
-            raise RuntimeError("The Vina scorer has already been closed")
-        self.engine.set_ligand_from_string(ligand)
-        native = getattr(self.engine, "_vina", None)
-        if native is None:
-            raise RuntimeError("The installed Vina package does not expose raw scores")
-        values = [float(value) for value in native.score()]
-        if len(values) != len(SCORE_TERMS):
-            raise ValueError(f"Vina score() returned {len(values)} components; "
-                             f"expected {len(SCORE_TERMS)}")
-        return values
-
-    def close(self) -> None:
-        self.engine = None
-        gc.collect()
-
-
 class VinaPoseScorer:
-    """Score one rigid peptide pose as additive residue interactions."""
+    """Score one rigid peptide pose as additive residue interactions.
+
+    This is the only place that touches the installed Vina wrapper's
+    raw-score API.
+    """
 
     def __init__(self, receptor_pdbqt: str | os.PathLike[str],
         center: Sequence[float], box_size: Sequence[float],
@@ -259,9 +220,27 @@ class VinaPoseScorer:
         self.box_size = [float(value) for value in box_size]
         self.spacing = float(spacing)
 
-        self._adapter = VinaAdapter(self.receptor_pdbqt, self.center,
-                                    self.box_size, self.spacing, cpu)
+        try:
+            from vina import Vina
+        except ImportError as exc:
+            raise RuntimeError("The Python package 'vina' is required") from exc
+        self.engine: Any | None = Vina(sf_name="vina", cpu=cpu, verbosity=0)
+        self.engine.set_receptor(str(self.receptor_pdbqt))
+        # Build all atom-type maps before loading residue fragments.
+        self.engine.compute_vina_maps(
+            center=self.center, box_size=self.box_size, spacing=self.spacing,
+            force_even_voxels=True)
         self._used = False
+
+    def _score_raw(self, ligand: str) -> list[float]:
+        """Read unrounded native terms before summing fragment energies."""
+        if self.engine is None:
+            raise RuntimeError("The Vina scorer has already been closed")
+        self.engine.set_ligand_from_string(ligand)
+        native = getattr(self.engine, "_vina", None)
+        if native is None:
+            raise RuntimeError("The installed Vina package does not expose raw scores")
+        return [float(value) for value in native.score()]
 
     def score_pose(
         self, peptide_pdbqt: str | os.PathLike[str], metrics: PoseMetrics
@@ -271,7 +250,7 @@ class VinaPoseScorer:
         if self._used:
             raise RuntimeError(
                 "A VinaPoseScorer can score only one peptide pose")
-        if self._adapter is None:
+        if self.engine is None:
             raise RuntimeError("The Vina scorer has already been closed")
         self._used = True
         peptide_path = Path(peptide_pdbqt)
@@ -279,21 +258,27 @@ class VinaPoseScorer:
             raise ValueError("Rigid peptide PDBQT has "
                 f"{metrics.active_torsions} active torsion(s): "
                 f"{peptide_path}")
-        accumulated = [0.0] * len(SCORE_TERMS)
+        accumulated: list[float] = []
         for residue_ligand in rigid_residue_ligands(peptide_path):
             # The public Python wrapper rounds each score to three
             # decimals. Sum the native values first so fragment rounding
             # cannot accumulate across a peptide.
-            values = self._adapter.score_raw(residue_ligand)
+            values = self._score_raw(residue_ligand)
+            if not accumulated:
+                accumulated = [0.0] * len(values)
+            elif len(values) != len(accumulated):
+                raise ValueError(
+                    "Vina returned inconsistent score components across "
+                    f"residue fragments of {peptide_path}")
             for index, value in enumerate(values):
                 accumulated[index] += value
+        # named_energies is the single check on the component count.
         return named_energies(np.around(accumulated, decimals=3))
 
     def close(self) -> None:
         """Release the native Vina object and its affinity maps."""
-        if self._adapter is not None:
-            self._adapter.close()
-            self._adapter = None
+        self.engine = None
+        gc.collect()
 
 
 def estimate_vina_memory_bytes(

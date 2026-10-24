@@ -1,4 +1,4 @@
-import csv
+import json
 import subprocess
 import sys
 import tempfile
@@ -8,14 +8,10 @@ from types import ModuleType
 from typing import ClassVar
 from unittest import mock
 
-from vina_scoring import batch, preparation, results, scoring, vina_score
-from vina_scoring.models import (
-    CombinedStructure,
-    ScoreJob,
-    SeparateStructures,
-    WorkflowConfig,
-)
-from vina_scoring.workflow import ScoringService
+from allopep.scoring import (cli as vina_score, preparation,
+                             records as results, service, vina as scoring)
+from allopep.scoring.models import CombinedStructure, ScoreJob, WorkflowConfig
+from allopep.scoring.service import ScoringService
 
 FIXTURE_DIR = Path(__file__).resolve().parent / "fixtures" / "vina_1a08"
 
@@ -136,8 +132,8 @@ class PreparationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             source = Path(temporary) / "complex.pdb"
             source.write_text(content)
-            preparer = preparation.PdbPreparer(hydrogen_policy="keep")
-            coordinates = preparer.selected_coordinates(source, ("B",))
+            preparer = preparation.MeekoPreparer(hydrogen_policy="keep")
+            coordinates = preparer.selector.selected_coordinates(source, ("B",))
         self.assertEqual(coordinates, [(5.0, 6.0, 7.0)])
 
     def test_meeko_creates_a_rigid_ligand_record_without_docking(self):
@@ -152,7 +148,7 @@ class PreparationTests(unittest.TestCase):
                     + pdbqt_atom_line(7, "C", "ALA", "B", 1, 0, 0, 0, "C"))
                 return subprocess.CompletedProcess(command, 0, "", "")
 
-            preparer = preparation.PdbPreparer(hydrogen_policy="rebuild")
+            preparer = preparation.MeekoPreparer(hydrogen_policy="rebuild")
             with (
                 mock.patch.object(preparation, "find_meeko_receptor_preparer",
                     return_value=Path("mk_prepare_receptor.py"),
@@ -179,9 +175,9 @@ class PreparationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             source = Path(temporary) / "peptide.pdb"
             source.write_text(content)
-            preparer = preparation.PdbPreparer(hydrogen_policy="keep")
-            receptor_coordinates = preparer.selected_coordinates(source)
-            peptide_coordinates = preparer.selected_coordinates(
+            preparer = preparation.MeekoPreparer(hydrogen_policy="keep")
+            receptor_coordinates = preparer.selector.selected_coordinates(source)
+            peptide_coordinates = preparer.selector.selected_coordinates(
                 source, as_ligand=True)
 
         self.assertEqual(receptor_coordinates, [(0.0, 0.0, 0.0)])
@@ -201,8 +197,8 @@ class PreparationTests(unittest.TestCase):
             writer.set_structure(structure)
             writer.save(str(mmcif))
 
-            coordinates = preparation.PdbPreparer(
-                hydrogen_policy="keep").selected_coordinates(mmcif, ("B",))
+            coordinates = preparation.MeekoPreparer(
+                hydrogen_policy="keep").selector.selected_coordinates(mmcif, ("B",))
 
         self.assertEqual(coordinates, [(1.0, 2.0, 3.0)])
 
@@ -213,8 +209,8 @@ class PreparationTests(unittest.TestCase):
             source = Path(temporary) / "peptide.pdb"
             selected = Path(temporary) / "selected.pdb"
             source.write_text(content + "END\n")
-            preparer = preparation.PdbPreparer(hydrogen_policy="keep")
-            preparer._write_selected_structure(
+            preparer = preparation.MeekoPreparer(hydrogen_policy="keep")
+            preparer.selector._write_selected_structure(
                 source, selected, None, as_ligand=True)
             with self.assertRaisesRegex(
                 ValueError, "Unsupported Meeko residue template.*ZZZ"):
@@ -233,7 +229,7 @@ class PreparationTests(unittest.TestCase):
                 return subprocess.CompletedProcess(
                     command, 0, "", "Warning: unsafe residue chemistry")
 
-            preparer = preparation.PdbPreparer(hydrogen_policy="keep")
+            preparer = preparation.MeekoPreparer(hydrogen_policy="keep")
             with (
                 mock.patch.object(preparation, "find_meeko_receptor_preparer",
                     return_value=Path("mk_prepare_receptor.py"),
@@ -245,60 +241,17 @@ class PreparationTests(unittest.TestCase):
 
 
 class BatchTests(unittest.TestCase):
-    def test_manifest_paths_are_relative_and_jobs_are_isolated(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            directory = Path(temporary)
-            receptor = directory / "receptor.pdb"
-            peptide_a = directory / "a.pdb"
-            peptide_b = directory / "b.pdb"
-            for filename in (receptor, peptide_a, peptide_b):
-                filename.write_text(pdb_atom_line(1, "A", 0, 0, 0))
-            manifest = directory / "jobs.csv"
-            manifest.write_text("id,receptor_pdb,peptide_pdb\n"
-                "a,receptor.pdb,a.pdb\n" "b,receptor.pdb,b.pdb\n")
-            jobs = batch.read_manifest(manifest)
-        self.assertEqual(len(jobs), 2)
-        self.assertTrue(all(isinstance(job.source, SeparateStructures)
-                            for job in jobs))
-
-    def test_memory_budget_rejects_a_job_before_scoring(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            directory = Path(temporary)
-            receptor = directory / "receptor.pdb"
-            peptide = directory / "peptide.pdb"
-            receptor.write_text(pdb_atom_line(1, "A", 0, 0, 0))
-            peptide.write_text(pdb_atom_line(1, "B", 0, 0, 0))
-            job = ScoreJob(index=0, job_id="limited",
-                source=SeparateStructures(receptor, peptide))
-            outcomes = batch.BatchRunner(
-                WorkflowConfig(), max_workers=2, memory_budget_bytes=1
-            ).run([job])
-        record = results.result_record(outcomes[0])
-        self.assertEqual(record["status"], "error")
-        self.assertIn("exceeds the batch budget", record["error"])
-
-    def test_cli_defaults_to_keeping_hydrogens(self):
-        args = vina_score.argument_parser([])
-        self.assertEqual(args.hydrogen_policy, "keep")
-        self.assertEqual(vina_score.argument_parser(
-                ["--hydrogen-policy", "rebuild"]).hydrogen_policy,
-            "rebuild",)
-
-    def test_missing_manifest_file_is_one_failure_row(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            manifest = Path(temporary) / "jobs.csv"
-            manifest.write_text(
-                "id,receptor_pdb,peptide_pdb\n"
-                f"missing,{FIXTURE_DIR / 'absent.cif'},"
-                f"{FIXTURE_DIR / '1a08_peptide.cif'}\n"
-                f"valid,{FIXTURE_DIR / '1a08_protein.cif'},"
-                f"{FIXTURE_DIR / '1a08_peptide.cif'}\n")
-            jobs = batch.read_manifest(manifest)
-            completed = []
-            outcomes = batch.BatchRunner(
-                WorkflowConfig(), max_workers=1,
-                memory_budget_bytes=2 * 1024**3).run(
-                    jobs, on_result=completed.append)
+    def test_missing_input_is_isolated_from_a_real_score(self):
+        jobs = [
+            ScoreJob(0, "missing",
+                     CombinedStructure(FIXTURE_DIR / "absent.cif", "C")),
+            ScoreJob(1, "valid",
+                     CombinedStructure(FIXTURE_DIR / "1a08_complex.cif", "C")),
+        ]
+        completed = []
+        outcomes = service.BatchRunner(
+            WorkflowConfig(), memory_budget_bytes=2 * 1024**3).run(
+                jobs, on_result=completed.append)
         records = [results.result_record(outcome) for outcome in outcomes]
         self.assertEqual(len(completed), 2)
         self.assertEqual([row["id"] for row in records], ["missing", "valid"])
@@ -306,32 +259,41 @@ class BatchTests(unittest.TestCase):
         self.assertIn("input does not exist", records[0]["error"])
         self.assertEqual(records[1]["score_total"], -5.64)
 
-    def test_cli_writes_failure_for_missing_manifest_input(self):
+    def test_memory_budget_rejects_a_job_before_scoring(self):
+        job = ScoreJob(index=0, job_id="limited", source=CombinedStructure(
+            FIXTURE_DIR / "1a08_complex.cif", "C"))
+        outcomes = service.BatchRunner(
+            WorkflowConfig(), memory_budget_bytes=1).run([job])
+        record = results.result_record(outcomes[0])
+        self.assertEqual(record["status"], "error")
+        self.assertIn("exceeds the batch budget", record["error"])
+
+    def test_cli_defaults_to_keeping_hydrogens(self):
+        base = [str(FIXTURE_DIR / "1a08_complex.cif"), "-c", "C"]
+        self.assertEqual(
+            vina_score.argument_parser(base).hydrogen_policy, "keep")
+        self.assertEqual(vina_score.argument_parser(
+                [*base, "--hydrogen-policy", "rebuild"]).hydrogen_policy,
+            "rebuild",)
+
+    def test_cli_writes_json_failure_for_missing_input(self):
         with tempfile.TemporaryDirectory() as temporary:
-            directory = Path(temporary)
-            manifest = directory / "jobs.csv"
-            output = directory / "scores.csv"
-            manifest.write_text(
-                "id,receptor_pdb,peptide_pdb\n"
-                "missing,absent_receptor.pdb,absent_peptide.pdb\n")
+            output = Path(temporary) / "score.json"
             self.assertEqual(vina_score.main([
-                "--manifest", str(manifest), "--output", str(output)]), 0)
-            with output.open(newline="", encoding="utf-8") as handle:
-                reader = csv.DictReader(handle)
-                self.assertEqual(tuple(reader.fieldnames or ()),
-                                 results.RESULT_FIELDS)
-                rows = list(reader)
-        self.assertEqual(len(rows), 1)
-        self.assertNotIn("schema_version", rows[0])
-        self.assertEqual(rows[0]["status"], "error")
-        self.assertIn("input does not exist", rows[0]["error"])
+                str(FIXTURE_DIR / "absent.cif"), "-c", "C",
+                "--output", str(output)]), 1)
+            record = json.loads(output.read_text())
+        self.assertEqual(tuple(sorted(record)),
+                         tuple(sorted(results.RESULT_FIELDS)))
+        self.assertNotIn("schema_version", record)
+        self.assertEqual(record["status"], "error")
+        self.assertIn("input does not exist", record["error"])
 
 
 class WorkflowTests(unittest.TestCase):
     def test_result_preserves_real_rigid_pose_score(self):
-        job = ScoreJob(0, "1a08", SeparateStructures(
-            FIXTURE_DIR / "1a08_protein.cif",
-            FIXTURE_DIR / "1a08_peptide.cif"))
+        job = ScoreJob(0, "1a08", CombinedStructure(
+            FIXTURE_DIR / "1a08_complex.cif", "C"))
         outcome = ScoringService(WorkflowConfig()).score_job(job)
         record = results.result_record(outcome)
         self.assertNotIn("schema_version", record)
@@ -354,7 +316,7 @@ class WorkflowTests(unittest.TestCase):
 
     def test_failure_uses_same_result_fields(self):
         job = ScoreJob(0, "missing", CombinedStructure(
-            FIXTURE_DIR / "absent.cif", "B"))
+            FIXTURE_DIR / "absent.cif", "C"))
         record = results.result_record(results.ScoreFailure(
             job, WorkflowConfig(), "missing input"))
         self.assertEqual(tuple(record), results.RESULT_FIELDS)

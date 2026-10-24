@@ -1,19 +1,24 @@
-#!/usr/bin/env python3
 """Inspect or finish OpenMM relaxation in an interrupted PepGLAD site directory.
 
-Run with the PepGLAD environment. The default is read-only; --apply moves
-malformed generated PDBs aside and relaxes the remaining unfinished designs.
+Run from the repository root with the PepGLAD environment::
+
+    python -m allopep.recover_relaxation ROUND_DIR
+
+The default is read-only; --apply moves malformed generated PDBs aside and
+relaxes the remaining unfinished designs.
 """
 
 import argparse
 import json
 import math
-import os
 import subprocess
 import sys
 from pathlib import Path
 
-from pepglad_outputs import removed_structures
+from .fileio import atomic_text
+from .layout import REPO_ROOT
+from .outputs import (REJECTED, check_summary_matches_pdbs, is_relaxed,
+                      removed_top_level_stems, summary_records)
 
 
 def pdb_coordinate_error(path):
@@ -33,33 +38,25 @@ def pdb_coordinate_error(path):
 
 def inspect_site(site_dir):
     summary_path = site_dir / 'summary.jsonl'
-    records = [json.loads(line) for line in summary_path.read_text().splitlines()
-               if line.strip()]
-    ids = [record['id'] for record in records]
-    if len(ids) != len(set(ids)):
-        raise ValueError(f'Duplicate IDs in {summary_path}')
-    removed = {Path(relative).stem for relative in removed_structures(site_dir)
-               if len(Path(relative).parts) == 1}
-    if {path.stem for path in site_dir.glob('*.pdb')} - removed != {
-            record['id'] for record in records
-            if record.get('status') not in ('invalid', 'error')} - removed:
-        raise ValueError(f'PDB files do not match {summary_path}')
+    records = summary_records(summary_path)
+    check_summary_matches_pdbs(site_dir, records)
+    removed = removed_top_level_stems(site_dir)
     relaxed, pending, invalid = [], [], []
-    for record in records:
-        if record.get('status') in ('invalid', 'error') or record['id'] in removed:
+    for identifier, record in records.items():
+        if record.get('status') in REJECTED or identifier in removed:
             continue
-        path = site_dir / (record['id'] + '.pdb')
-        with path.open(encoding='utf-8') as handle:
-            if handle.readline().startswith('REMARK   1 CREATED WITH OPENMM'):
-                relaxed.append(path)
-                continue
+        path = site_dir / (identifier + '.pdb')
+        if is_relaxed(path):
+            relaxed.append(path)
+            continue
         error = pdb_coordinate_error(path)
         (invalid if error else pending).append((path, error))
     return summary_path, records, relaxed, pending, invalid
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(
+        prog='python -m allopep.recover_relaxation', description=__doc__)
     parser.add_argument('site_dir', type=Path)
     parser.add_argument('--apply', action='store_true',
                         help='Quarantine malformed PDBs and relax pending designs')
@@ -85,19 +82,13 @@ def main():
             if destination.exists():
                 raise FileExistsError(destination)
             path.rename(destination)
-            for record in records:
-                if record['id'] == path.stem:
-                    record['status'] = 'invalid'
-                    record['error'] = error
-                    break
-        temporary = summary_path.with_suffix('.jsonl.tmp')
-        with temporary.open('w', encoding='utf-8') as handle:
-            for record in records:
+            records[path.stem].update(status='invalid', error=error)
+        with atomic_text(summary_path) as handle:
+            for record in records.values():
                 handle.write(json.dumps(record) + '\n')
-        os.replace(temporary, summary_path)
 
     if pending:
-        pepglad_dir = Path(__file__).resolve().parent / 'PepGLAD'
+        pepglad_dir = REPO_ROOT / 'PepGLAD'
         for index, (path, _) in enumerate(pending, 1):
             print(f'Relaxing {path.name} ({index}/{len(pending)})', flush=True)
             subprocess.run([

@@ -6,14 +6,18 @@ import os
 import tempfile
 import time
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from allopep import find_existing_pepglad_outputs, main, parse_args
-from peptide_sampling import (SamplingController, atomic_json, next_round_size,
-                              sampling_lock, sha256)
-from recover_pepglad_relaxation import inspect_site
+from allopep.cli import (find_existing_pepglad_outputs, main, parse_args,
+                         sampling_config)
+from allopep.fileio import atomic_json, sha256
+from allopep.layout import OutputLayout
+from allopep.sampling import (SamplingConfig, SamplingController,
+                              next_round_size, sampling_lock)
+from allopep.recover_relaxation import inspect_site
 
 
 FIELDS = ('path', 'site', 'sample', 'status', 'reasons', 'peptide_chain',
@@ -28,16 +32,17 @@ class SamplingTests(unittest.TestCase):
         self.pdb = self.root / 'target.pdb'
         self.pdb.write_text('input receptor\n')
         self.out = self.root / 'output'
-        self.args = SimpleNamespace(num_samples=1, max_num_peptides=32,
-                                    round_timeout_seconds=60, length_min=5,
-                                    length_max=10, peptide_chain=None, resume=False)
+        self.layout = OutputLayout.at(self.out, 'target')
+        self.config = SamplingConfig(num_samples=1, max_attempts=32,
+                                     round_timeout_seconds=60, length_min=5,
+                                     length_max=10)
         self.contexts = [SimpleNamespace(as_pepglad_pocket=lambda: [['A', [1, ' ']]])]
         self.events = []
         self.validation_calls = []
         self.outcome = lambda site, sample: 'invalid'
         self.generation_failures = {}
 
-    def generate(self, args, pdb, pocket, directory, count, *, deadline):
+    def generate(self, config, pdb, pocket, directory, count, *, deadline):
         metadata = json.loads((directory / 'round.json').read_text())
         site, start = metadata['site'], metadata['start']
         self.events.append((site, start, count))
@@ -62,7 +67,7 @@ class SamplingTests(unittest.TestCase):
         (directory / 'summary.jsonl').write_text(
             ''.join(json.dumps(record) + '\n' for record in records))
 
-    def validate(self, designs, directory, prefix, peptide_chain, input_pdb, **kwargs):
+    def validate(self, designs, directory, layout, peptide_chain, input_pdb, **kwargs):
         self.validation_calls.append([(design.site, design.sample) for design in designs])
         rows = []
         for design in designs:
@@ -71,18 +76,19 @@ class SamplingTests(unittest.TestCase):
                              status=status, reasons='' if status == 'valid' else 'test failure',
                              peptide_chain=design.peptide_chain, sha256=sha256(design.path),
                              input_sha256=sha256(input_pdb)))
-        with (directory / f'{prefix}_pepglad_validation.csv').open('w', newline='') as handle:
+        csv_path, jsonl_path, manifest_path = layout.validation_reports(directory)
+        with csv_path.open('w', newline='') as handle:
             writer = csv.DictWriter(handle, fieldnames=FIELDS)
             writer.writeheader()
             writer.writerows(rows)
-        (directory / f'{prefix}_pepglad_validation.jsonl').write_text(
+        jsonl_path.write_text(
             ''.join(json.dumps({'result': row, 'details': {}}) + '\n' for row in rows))
-        atomic_json(directory / f'{prefix}_pepglad_validation_manifest.json',
+        atomic_json(manifest_path,
                     [{'path': design.resolved_path} for design in designs])
         return [design for design, row in zip(designs, rows) if row['status'] == 'valid']
 
     def controller(self, generate=None, validate=None):
-        return SamplingController(self.args, str(self.pdb), self.out, 'target',
+        return SamplingController(self.config, str(self.pdb), self.layout,
                                   self.contexts, generate or self.generate,
                                   validate or self.validate)
 
@@ -94,7 +100,7 @@ class SamplingTests(unittest.TestCase):
         self.assertEqual(parsed.num_samples, 10)
         self.assertEqual(parsed.attempt_multiplier, 1000)
         self.assertIsNone(parsed.max_num_peptides)
-        with patch('allopep.check_vina_dependencies', side_effect=FileNotFoundError) as resolve:
+        with patch('allopep.cli.check_vina_dependencies', side_effect=FileNotFoundError) as resolve:
             with self.assertRaises(FileNotFoundError):
                 main(['target.pdb', '-n', '3'])
         resolve.assert_called_once()
@@ -107,11 +113,7 @@ class SamplingTests(unittest.TestCase):
         for options, expected in cases:
             with self.subTest(options=options):
                 parsed = parse_args(['target.pdb', '-n', '3', *options])
-                with patch('allopep.parse_args', return_value=parsed), \
-                     patch('allopep.check_vina_dependencies', side_effect=FileNotFoundError):
-                    with self.assertRaises(FileNotFoundError):
-                        main()
-                self.assertEqual(parsed.max_num_peptides, expected)
+                self.assertEqual(sampling_config(parsed).max_attempts, expected)
 
     def test_adaptive_sizes_and_clipping(self):
         self.assertEqual(next_round_size(10, 0, 0, 8, 100), 8)
@@ -126,8 +128,8 @@ class SamplingTests(unittest.TestCase):
         self.assertEqual(next_round_size(10, 40, 10, 16, 100), 0)
 
     def test_success_after_several_rounds_and_exact_target_at_cap(self):
-        self.args.num_samples = 4
-        self.args.max_num_peptides = 40
+        self.config = replace(self.config, num_samples=4)
+        self.config = replace(self.config, max_attempts=40)
         self.outcome = lambda site, sample: 'valid' if sample in (0, 8, 24, 25) else 'invalid'
         result = self.controller().run()
         self.assertFalse(result.shortfall)
@@ -141,7 +143,7 @@ class SamplingTests(unittest.TestCase):
             self.assertEqual(len(list(csv.DictReader(handle))), 40)
 
     def test_zero_acceptance_uses_leftover_budget_below_eight(self):
-        self.args.max_num_peptides = 29
+        self.config = replace(self.config, max_attempts=29)
         result = self.controller().run()
         self.assertTrue(result.shortfall)
         self.assertEqual(result.selected, [])
@@ -150,7 +152,7 @@ class SamplingTests(unittest.TestCase):
 
     def test_round_robin_and_independent_site_completion(self):
         self.contexts *= 3
-        self.args.max_num_peptides = 29
+        self.config = replace(self.config, max_attempts=29)
         self.outcome = lambda site, sample: 'valid' if (site, sample) in ((1, 0), (3, 8)) else 'invalid'
         result = self.controller().run()
         self.assertEqual(self.events, [(1, 0, 8), (2, 0, 8), (3, 0, 8),
@@ -159,12 +161,12 @@ class SamplingTests(unittest.TestCase):
         self.assertTrue(result.shortfall)
 
     def test_overshoot_keeps_first_valid_structures_and_repeated_sequences(self):
-        self.args.num_samples = 2
+        self.config = replace(self.config, num_samples=2)
         self.outcome = lambda site, sample: 'valid'
         result = self.controller().run()
         self.assertEqual([design.sample for design in result.selected], [0, 1])
         self.assertEqual(self.state()['sites'][0]['valid_count'], 8)
-        self.assertEqual(len(find_existing_pepglad_outputs(self.out, 'target')), 8)
+        self.assertEqual(len(find_existing_pepglad_outputs(self.layout)), 8)
 
     def test_generation_and_validation_failures_consume_attempts(self):
         self.generation_failures = {(1, 0): 'invalid', (1, 1): 'error'}
@@ -181,7 +183,7 @@ class SamplingTests(unittest.TestCase):
 
     def test_rejected_structures_are_removed_before_the_next_site_or_round(self):
         self.contexts *= 2
-        self.args.max_num_peptides = 16
+        self.config = replace(self.config, max_attempts=16)
         self.outcome = lambda site, sample: 'valid' if (site, sample) == (1, 8) else 'invalid'
         def check_then_generate(*args, **kwargs):
             for pdb in self.out.glob('**/*.pdb'):
@@ -195,14 +197,14 @@ class SamplingTests(unittest.TestCase):
         self.assertEqual(list(self.out.glob('**/*.pdb')), [result.selected[0].path])
 
     def test_all_invalid_cleanup_preserves_reports_and_resumes_without_validation(self):
-        self.args.max_num_peptides = 8
+        self.config = replace(self.config, max_attempts=8)
         self.controller().run()
         self.assertFalse(list(self.out.glob('**/*.pdb')))
         journal = next(self.out.glob('**/removed_structures.json'))
         self.assertEqual(len(json.loads(journal.read_text())), 8)
         self.assertEqual(len((journal.parent / 'summary.jsonl').read_text().splitlines()), 8)
-        self.assertEqual(find_existing_pepglad_outputs(self.out, 'target'), [])
-        self.args.resume = True
+        self.assertEqual(find_existing_pepglad_outputs(self.layout), [])
+        self.config = replace(self.config, resume=True)
         self.validation_calls.clear()
         self.assertTrue(self.controller().run().shortfall)
         self.assertEqual(self.validation_calls, [])
@@ -225,7 +227,7 @@ class SamplingTests(unittest.TestCase):
                 self.controller().run()
         self.assertEqual(self.state()['sites'][0]['attempted'], 8)
         self.assertEqual(len(list(self.out.glob('**/*.pdb'))), 7)
-        self.args.resume = True
+        self.config = replace(self.config, resume=True)
         self.validation_calls.clear()
         result = self.controller().run()
         self.assertEqual(self.validation_calls, [])
@@ -241,7 +243,7 @@ class SamplingTests(unittest.TestCase):
         with patch.object(SamplingController, '_remove_rejected_structures'):
             self.controller().run()
         self.assertEqual(len(list(self.out.glob('**/*.pdb'))), 8)
-        self.args.resume = True
+        self.config = replace(self.config, resume=True)
         self.validation_calls.clear()
         result = self.controller().run()
         self.assertEqual(self.validation_calls, [])
@@ -251,7 +253,7 @@ class SamplingTests(unittest.TestCase):
         self.outcome = lambda site, sample: 'valid' if sample == 0 else 'invalid'
         result = self.controller().run()
         result.selected[0].path.unlink()
-        self.args.resume = True
+        self.config = replace(self.config, resume=True)
         with self.assertRaisesRegex(ValueError, 'missing=.*target_0'):
             self.controller().run()
 
@@ -262,21 +264,21 @@ class SamplingTests(unittest.TestCase):
         pdb = result.selected[0].path
         atomic_json(pdb.parent / 'removed_structures.json',
                     {pdb.name: {'status': 'invalid', 'sha256': sha256(pdb)}})
-        self.args.resume = True
+        self.config = replace(self.config, resume=True)
         with self.assertRaisesRegex(ValueError, 'no matching rejection'):
             self.controller().run()
         self.assertTrue(pdb.is_file())
 
     def test_resume_reuses_validated_rounds_and_does_not_reset_budget(self):
-        self.args.max_num_peptides = 8
+        self.config = replace(self.config, max_attempts=8)
         self.assertTrue(self.controller().run().shortfall)
         # Simulate cumulative reports saved before the scorer migration.
         old_reports = self.out / 'target_rosetta_score'
         (self.out / 'target_vina_score').rename(old_reports)
         historical_csv = old_reports / 'target_pepglad_validation.csv'
         historical_bytes = historical_csv.read_bytes()
-        self.args.resume = True
-        self.args.max_num_peptides = 16
+        self.config = replace(self.config, resume=True)
+        self.config = replace(self.config, max_attempts=16)
         self.outcome = lambda site, sample: 'valid' if sample == 8 else 'invalid'
         self.validation_calls.clear()
         result = self.controller().run()
@@ -294,8 +296,8 @@ class SamplingTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'interrupted'):
             self.controller(generate=interrupted).run()
         self.assertEqual(self.state()['sites'][0]['attempted'], 8)
-        self.args.resume = True
-        self.args.max_num_peptides = 16
+        self.config = replace(self.config, resume=True)
+        self.config = replace(self.config, max_attempts=16)
         self.outcome = lambda site, sample: 'valid' if sample == 8 else 'invalid'
         result = self.controller().run()
         self.assertEqual(result.selected[0].sample, 8)
@@ -308,7 +310,7 @@ class SamplingTests(unittest.TestCase):
             raise RuntimeError('interrupted generation')
         with self.assertRaises(RuntimeError):
             self.controller(generate=interrupted).run()
-        self.args.resume = True
+        self.config = replace(self.config, resume=True)
         self.outcome = lambda site, sample: 'valid' if sample == 0 else 'invalid'
         result = self.controller().run()
         self.assertEqual(result.selected[0].sample, 0)
@@ -319,9 +321,9 @@ class SamplingTests(unittest.TestCase):
         def unrelaxed(*args, **kwargs):
             self.generate(*args, **kwargs)
             (args[3] / 'target_0.pdb').write_text('unrelaxed coordinates\n')
-        with self.assertRaisesRegex(RuntimeError, 'recover_pepglad_relaxation'):
+        with self.assertRaisesRegex(RuntimeError, 'allopep.recover_relaxation'):
             self.controller(generate=unrelaxed).run()
-        self.args.resume = True
+        self.config = replace(self.config, resume=True)
         with self.assertRaisesRegex(RuntimeError, 'unrelaxed'):
             self.controller().run()
         self.assertEqual(self.state()['sites'][0]['attempted'], 8)
@@ -330,11 +332,11 @@ class SamplingTests(unittest.TestCase):
     def test_resume_rejects_changed_input_settings_pockets_and_artifacts(self):
         self.outcome = lambda site, sample: 'valid'
         self.controller().run()
-        self.args.resume = True
-        self.args.length_max += 1
+        self.config = replace(self.config, resume=True)
+        self.config = replace(self.config, length_max=self.config.length_max + 1)
         with self.assertRaisesRegex(ValueError, 'settings'):
             self.controller()
-        self.args.length_max -= 1
+        self.config = replace(self.config, length_max=self.config.length_max - 1)
         self.pdb.write_text('different receptor')
         with self.assertRaisesRegex(ValueError, 'input'):
             self.controller()
@@ -350,30 +352,28 @@ class SamplingTests(unittest.TestCase):
             self.controller().run()
 
     def test_fresh_run_and_smaller_resume_cap_are_rejected(self):
-        self.args.max_num_peptides = 8
+        self.config = replace(self.config, max_attempts=8)
         self.controller().run()
         with self.assertRaisesRegex(ValueError, 'require --resume'):
             self.controller()
-        self.args.resume = True
-        self.args.max_num_peptides = 7
+        self.config = replace(self.config, resume=True)
+        self.config = replace(self.config, max_attempts=7)
         with self.assertRaisesRegex(ValueError, 'already charged 8'):
             self.controller()
 
-    def test_legacy_outputs_are_validated_and_charged_before_new_round(self):
-        self.args.resume = True
+    def test_pre_round_site_layout_is_rejected(self):
+        """Designs directly in a site directory are the removed legacy shape."""
+        self.config = replace(self.config, resume=True)
         directory = self.out / 'target_PepGLAD_outputs/target_allosteric_site_1_codesign'
         directory.mkdir(parents=True)
         atomic_json(directory / 'round.json', {'site': 1, 'start': 0, 'count': 8})
-        self.generate(self.args, str(self.pdb), None, directory, 8,
+        self.generate(self.config, str(self.pdb), None, directory, 8,
                       deadline=time.monotonic() + 60)
         (directory / 'round.json').unlink()
         atomic_json(self.out / 'target_allosteric_sites/target_allosteric_site_1.json',
                     [['A', [1, ' ']]])
-        self.outcome = lambda site, sample: 'valid' if sample == 8 else 'invalid'
-        result = self.controller().run()
-        self.assertEqual(result.selected[0].sample, 8)
-        self.assertEqual(self.state()['sites'][0]['attempted'], 24)
-        self.assertEqual(len(find_existing_pepglad_outputs(self.out, 'target')), 1)
+        with self.assertRaisesRegex(ValueError, 'round_NNNNNN subdirectories'):
+            self.controller()
 
     def test_timeout_preserves_budget_and_error_summary(self):
         def timeout(*args, **kwargs):
@@ -404,9 +404,9 @@ class SamplingTests(unittest.TestCase):
         self.assertEqual(self.state()['sites'][0]['attempted'], 8)
 
     def test_sampling_lock_prevents_concurrent_budget_use(self):
-        with sampling_lock(self.out):
+        with sampling_lock(self.layout):
             with self.assertRaisesRegex(RuntimeError, 'Another sampling'):
-                with sampling_lock(self.out):
+                with sampling_lock(self.layout):
                     self.fail('second lock acquired')
 
     def test_main_returns_shortfall_and_ranks_only_selected_designs(self):
@@ -417,19 +417,19 @@ class SamplingTests(unittest.TestCase):
         for shortfall, expected, cap in ((False, 0, None), (True, 2, None),
                                          (False, 0, 20), (False, 0, 50000)):
             result = SimpleNamespace(selected=selected, shortfall=shortfall, summary_path='summary')
-            with patch('allopep.check_vina_dependencies', return_value='/fake/ia'), \
-                 patch('allopep.prepare_input_pdb', return_value=str(self.pdb)), \
-                 patch('allopep.run_gaps.run_gaps'), \
-                 patch('allopep.run_gaps.select_guidance_contexts', return_value=self.contexts), \
-                 patch('allopep.run_pepglad', return_value=result) as sample, \
-                 patch('allopep.write_pymol_session', return_value='session') as pymol, \
-                 patch('allopep.rank_pepglad_outputs', return_value=[{}]) as rank, \
-                 patch('allopep.run_openstructure_validation') as validate:
+            with patch('allopep.cli.check_vina_dependencies', return_value='/fake/ia'), \
+                 patch('allopep.cli.prepare_input_pdb', return_value=str(self.pdb)), \
+                 patch('allopep.cli.gaps.run_gaps'), \
+                 patch('allopep.cli.gaps.select_guidance_contexts', return_value=self.contexts), \
+                 patch('allopep.cli.run_pepglad', return_value=result) as sample, \
+                 patch('allopep.cli.write_pymol_session', return_value='session') as pymol, \
+                 patch('allopep.cli.rank_pepglad_outputs', return_value=[{}]) as rank, \
+                 patch('allopep.cli.run_openstructure_validation') as validate:
                 arguments = ['target.pdb', '-n', '3']
                 if cap is not None:
                     arguments.extend(['--max_num_peptides', str(cap)])
                 self.assertEqual(main(arguments), expected)
-                self.assertEqual(sample.call_args.args[0].max_num_peptides,
+                self.assertEqual(sample.call_args.args[0].max_attempts,
                                  3000 if cap is None else cap)
                 self.assertEqual(rank.call_args.args[0], selected)
                 self.assertEqual(pymol.call_args.args[0], selected)
@@ -441,21 +441,21 @@ class SamplingTests(unittest.TestCase):
         os.chdir(self.root)
         designs = [SimpleNamespace(sample=0)]
         for option in ('--validate-existing', '--rank-existing'):
-            with patch('allopep.check_vina_dependencies', return_value='/fake/ia'), \
-                 patch('allopep.prepare_input_pdb', return_value=str(self.pdb)), \
-                 patch('allopep.find_existing_pepglad_outputs', return_value=designs), \
-                 patch('allopep.write_allosteric_site_visualization',
+            with patch('allopep.cli.check_vina_dependencies', return_value='/fake/ia'), \
+                 patch('allopep.cli.prepare_input_pdb', return_value=str(self.pdb)), \
+                 patch('allopep.cli.find_existing_pepglad_outputs', return_value=designs), \
+                 patch('allopep.cli.write_allosteric_site_visualization',
                        return_value=Path('target_allosteric_site.pse')) as site_view, \
-                 patch('allopep.run_openstructure_validation', return_value=designs), \
-                 patch('allopep.write_pymol_session', return_value='session'), \
-                 patch('allopep.rank_pepglad_outputs', return_value=[{}]) as rank, \
-                 patch('allopep.run_pepglad') as sample, \
-                 patch('allopep.run_gaps.run_gaps') as gaps:
+                 patch('allopep.cli.run_openstructure_validation', return_value=designs), \
+                 patch('allopep.cli.write_pymol_session', return_value='session'), \
+                 patch('allopep.cli.rank_pepglad_outputs', return_value=[{}]) as rank, \
+                 patch('allopep.cli.run_pepglad') as sample, \
+                 patch('allopep.cli.gaps.run_gaps') as gaps:
                 self.assertEqual(main(['target.pdb', option]), 0)
                 sample.assert_not_called()
                 gaps.assert_not_called()
                 site_view.assert_called_once_with(
-                    Path('output/target_output'), 'target')
+                    OutputLayout.at(Path('output/target_output'), 'target'))
                 self.assertEqual(rank.call_count, int(option == '--rank-existing'))
 
 

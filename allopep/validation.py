@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """OpenStructure checks for PepGLAD receptor-peptide complexes.
 
-Run with ``ost pepglad_validation.py --manifest ... --csv ... --jsonl ...``.
+Run with ``ost allopep/validation.py --manifest ... --csv ... --jsonl ...``.
 Hydrogens are excluded from stereochemistry checks: OpenMM's hydrogen bond
 lengths can disagree with OpenStructure's reference tables after relaxation.
 """

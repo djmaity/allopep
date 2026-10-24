@@ -7,22 +7,39 @@ artifact formats.
 
 ## Source map
 
+The pipeline is the `allopep` package, run as `python -m allopep`.
+
 | File or directory | Responsibility |
 | --- | --- |
-| `allopep.py` | CLI, stage orchestration, validation invocation, and PyMOL artifacts. |
-| `gaps_predict.py` | GAPS inference and full-precision residue score export. |
-| `run_gaps.py` | Residue mapping, accessibility, connected pockets, and ranking. |
-| `peptide_sampling.py` | Per-site budgets, adaptive rounds, selection, integrity checks, and rejection cleanup. |
-| `process_control.py` | Logged subprocess execution and deadline/process-tree handling. |
-| `pepglad_outputs.py` | Summary parsing, chain/sequence metadata, round IDs, and deletion journals. |
-| `pepglad_validation.py` | OpenStructure/CCTBX measurements, policy, parallel workers, and reports. |
-| `vina_ranking.py` | Valid-design submission, diagnostics, and Vina ranked CSVs. |
-| `recover_pepglad_relaxation.py` | Inspection and optional recovery of interrupted relaxation. |
+| `allopep/__main__.py` | Entry point for `python -m allopep`. |
+| `allopep/cli.py` | Command line, stage orchestration, and validation invocation. |
+| `allopep/layout.py` | Repository anchors and every output path, derived in one place. |
+| `allopep/fileio.py` | Atomic file replacement and content hashing. |
+| `allopep/gaps_predict.py` | GAPS inference and full-precision residue score export. |
+| `allopep/gaps.py` | Residue mapping, accessibility, connected pockets, and ranking. |
+| `allopep/sampling.py` | Per-site budgets, adaptive rounds, selection, integrity checks, and rejection cleanup. |
+| `allopep/process_control.py` | Logged subprocess execution and deadline/process-tree handling. |
+| `allopep/outputs.py` | Summary parsing, chain/sequence metadata, round IDs, and deletion journals. |
+| `allopep/validation.py` | OpenStructure/CCTBX measurements, policy, parallel workers, and reports. |
+| `allopep/validation_reports.py` | Validation manifest, `ost` invocation, and report-to-design matching. |
+| `allopep/pymol_session.py` | PyMOL scripts and saved sessions. |
+| `allopep/ranking.py` | Valid-design submission, diagnostics, and Vina ranked CSVs. |
+| `allopep/recover_relaxation.py` | Inspection and optional recovery of interrupted relaxation. |
+| `allopep/scoring/` | Rigid-pose Meeko/Vina scorer, also usable on its own as `python -m allopep.scoring`. |
 | `install.sh`, `environment.yml` | Pinned dependency setup and the main environment declaration. |
 | `patches/` | Changes applied to the pinned external checkouts. |
-| `vina_scoring/` | Canonical rigid-pose Meeko/Vina scorer, also imported by the comparison repository. |
 | `tests/` | Focused regression tests and fixtures. |
 | `docs/`, `mkdocs.yml` | This documentation site. |
+| `normal_mode_analysis.ipynb` | Reference material kept for planned normal-mode support; not part of the pipeline. |
+
+Two constraints are easy to break by accident:
+
+- **`allopep/__init__.py` imports nothing.** It is imported from the `gaps`
+  environment for `allopep.gaps_predict` and from the `PepGLAD`
+  environment for `allopep.recover_relaxation`, and neither has the
+  `allopep` environment's dependencies.
+- **`allopep/validation.py` imports nothing from its own package.** The
+  `ost` interpreter runs it by absolute path rather than importing it.
 
 ## Run the focused tests
 
@@ -44,6 +61,14 @@ For installer syntax:
 
 ```bash
 bash -n install.sh
+```
+
+Because the package is imported from three environments, check that the two
+foreign ones can still load it after changing imports:
+
+```bash
+conda run -n gaps python -c "import allopep, allopep.gaps_predict"
+conda run -n PepGLAD python -c "import allopep, allopep.recover_relaxation"
 ```
 
 Focused tests verify their particular code paths. They do not constitute a
@@ -77,8 +102,10 @@ python -m venv .venv-docs
 .venv-docs/bin/python -m mkdocs build --strict
 ```
 
-The static HTML site is written to `site/`. Both `site/` and `.venv-docs/` are
-ignored by Git. To preview it:
+The static HTML site is written to `site/`, with direct page links such as
+`validation.html`. After building, you can open `site/index.html` to browse
+the pages directly without directory listings. Both `site/` and `.venv-docs/`
+are ignored by Git. For the full preview, including search, use the local server:
 
 ```bash
 .venv-docs/bin/python -m mkdocs serve

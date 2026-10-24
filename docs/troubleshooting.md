@@ -51,7 +51,7 @@ actual difference.
 ## Unrelaxed or malformed saved candidates
 
 If resume reports unrelaxed samples, inspect the affected directory with
-`recover_pepglad_relaxation.py` in the `PepGLAD` environment. Its default is
+`python -m allopep.recover_relaxation` in the `PepGLAD` environment. Its default is
 read-only; `--apply` quarantines malformed generated PDBs and relaxes pending
 designs. The complete [recovery commands](sampling-and-resume.md#interrupted-openmm-relaxation)
 include the per-design timeout.

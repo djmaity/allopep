@@ -48,7 +48,9 @@ Before selection, AlloPep checks the records against the original receptor:
 
 - Identities must be unique and residue names must match.
 - Scores must be finite and between zero and one.
-- A supplied Cα coordinate must agree with the receptor within 0.05 Å.
+- A supplied Cα coordinate must agree with the receptor within 0.01 Å.
+  The same check guards the PyMOL score overlay, so one disagreement
+  fails both pocket selection and the visualization.
 - Residues without a usable Cα mapping cannot enter a pocket.
 
 Selection uses the JSON scores, avoiding the reduced precision of PDB B factors.
@@ -76,7 +78,7 @@ not evidence that a two-residue pocket yields high-quality designs.
 
 ## Historical benchmarks and resume
 
-`GAPS_DEFAULT_SELECTION_REPORT.md` in the repository records historical
+The `GAPS_DEFAULT_SELECTION_REPORT.md` report records historical
 optimization evidence. Its radius-limited, score-blended selector and the
 earlier connected-pocket threshold experiments differ from the current rules.
 Those results do not measure recovery for the current algorithm.
@@ -89,5 +91,6 @@ Resume requires the same selected site count and exact saved pocket JSON.
 Changed thresholds, changed pocket membership, or old three-field scored
 entries can cause a mismatch. See [Sampling and resume](sampling-and-resume.md).
 
-Implementation: `gaps_predict.py`, `run_gaps.py::load_scored_residues()`, and
-`run_gaps.py::select_contexts()`.
+Implementation: `allopep/gaps_predict.py`,
+`allopep/gaps.py::load_scored_residues()`, and
+`allopep/gaps.py::select_contexts()`.

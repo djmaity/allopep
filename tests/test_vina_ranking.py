@@ -9,21 +9,28 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from allopep import (find_existing_pepglad_outputs, parse_args, prepare_input_pdb,
-                     main, rank_pepglad_outputs, run_openstructure_validation,
-                     run_pepglad_round, write_pymol_session)
-from pepglad_outputs import DesignOutput, load_design_outputs
-from vina_ranking import check_vina_dependencies
-from vina_scoring.models import WorkflowConfig
-from vina_scoring.results import ScoreSuccess, failure
-from vina_scoring.scoring import PoseMetrics, SCORE_TERMS
-from run_gaps import ScoredResidue, select_contexts, select_guidance_contexts
+from allopep.cli import (find_existing_pepglad_outputs, parse_args, prepare_input_pdb,
+                         main, rank_pepglad_outputs,
+                         run_openstructure_validation, run_pepglad_round)
+from allopep.fileio import atomic_json
+from allopep.layout import OutputLayout
+from allopep.pymol_session import write_pymol_session
+from allopep.outputs import DesignOutput, load_design_outputs
+from allopep.ranking import check_vina_dependencies
+from allopep.scoring.models import WorkflowConfig
+from allopep.scoring.records import ScoreSuccess, failure
+from allopep.scoring.vina import PoseMetrics, SCORE_TERMS
+from allopep.gaps import ScoredResidue, select_contexts, select_guidance_contexts
 
 
 def design(path, site=1, sample=0, sequence='LHLKA', peptide_chain='B',
            receptor_chains=('A',)):
     return DesignOutput(path, site, sample, sequence,
                         peptide_chain, receptor_chains)
+
+
+def _layout(root, prefix='target'):
+    return OutputLayout.at(root, prefix)
 
 
 class VinaRankingTests(unittest.TestCase):
@@ -71,10 +78,10 @@ class VinaRankingTests(unittest.TestCase):
                 session.write_bytes(b'PyMOL session')
                 return SimpleNamespace(returncode=0, stderr='', stdout='')
 
-            with patch('allopep._pymol_score_commands', return_value=[]) as scores, \
-                 patch('allopep.subprocess.run', side_effect=build_session):
-                session = write_pymol_session(generated, root, 'target')
-            scores.assert_called_once_with(root, 'target', 'target')
+            with patch('allopep.pymol_session._pymol_score_commands', return_value=[]) as scores, \
+                 patch('allopep.pymol_session.subprocess.run', side_effect=build_session):
+                session = write_pymol_session(generated, _layout(root))
+            scores.assert_called_once_with(_layout(root), 'target')
             content = scripts[0]
             self.assertEqual(session.name, 'target_pepglad_aligned.pse')
             self.assertEqual(session.read_bytes(), b'PyMOL session')
@@ -135,11 +142,12 @@ class VinaRankingTests(unittest.TestCase):
             (root / 'target.pdb').touch()
             session = root / 'target_pepglad_aligned.pse'
             session.write_bytes(b'previous session')
-            with patch('allopep._pymol_score_commands', return_value=[]), \
-                 patch('allopep.subprocess.run', return_value=SimpleNamespace(
-                    returncode=1, stderr='PyMOL failed', stdout='')):
+            with patch('allopep.pymol_session._pymol_score_commands', return_value=[]), \
+                 patch('allopep.pymol_session.subprocess.run',
+                       return_value=SimpleNamespace(
+                           returncode=1, stderr='PyMOL failed', stdout='')):
                 with self.assertRaisesRegex(RuntimeError, 'PyMOL failed'):
-                    write_pymol_session([], root, 'target')
+                    write_pymol_session([], _layout(root))
             self.assertEqual(session.read_bytes(), b'previous session')
             self.assertFalse(list(root.glob('.allopep-pymol-*')))
 
@@ -150,18 +158,18 @@ class VinaRankingTests(unittest.TestCase):
             source.write_bytes(b'original input')
             out_dir = root / 'output' / 'target_output'
 
-            saved = Path(prepare_input_pdb(source, out_dir))
+            saved = Path(prepare_input_pdb(source, _layout(out_dir)))
             self.assertEqual(saved, (out_dir / 'target.pdb').resolve())
             self.assertEqual(saved.read_bytes(), source.read_bytes())
 
             source.write_bytes(b'changed input')
             self.assertEqual(
-                prepare_input_pdb(source, out_dir, validate_existing=True),
+                prepare_input_pdb(source, _layout(out_dir), validate_existing=True),
                 str(saved),
             )
             self.assertEqual(saved.read_bytes(), b'original input')
             with self.assertRaisesRegex(ValueError, 'different input PDB'):
-                prepare_input_pdb(source, out_dir)
+                prepare_input_pdb(source, _layout(out_dir))
             self.assertEqual(saved.read_bytes(), b'original input')
 
     def test_pepglad_round_uses_absolute_paths_and_an_isolated_log(self):
@@ -170,7 +178,7 @@ class VinaRankingTests(unittest.TestCase):
             root = Path(directory)
             pocket = root / 'pocket.json'
             round_dir = root / 'round_000001'
-            with patch('allopep.run_logged') as run:
+            with patch('allopep.cli.run_logged') as run:
                 run_pepglad_round(args, '/input/target.pdb', pocket, round_dir, 16,
                                   deadline=1234)
             command = run.call_args.args[0]
@@ -224,20 +232,20 @@ class VinaRankingTests(unittest.TestCase):
                             job, WorkflowConfig(), ValueError('bad residue'))
                         for index, job in enumerate(jobs)]
 
-            with patch('vina_scoring.batch.BatchRunner.run',
+            with patch('allopep.scoring.service.BatchRunner.run',
                        side_effect=score_jobs):
-                ranked = rank_pepglad_outputs(valid, root, 'target')
+                ranked = rank_pepglad_outputs(valid, _layout(root))
             self.assertEqual([(r['site'], r['sample']) for r in ranked],
                              [(3, 0), (1, 0), (1, 1), (2, 1)])
             self.assertEqual([r['rank'] for r in ranked], [1, 2, 3, 4])
-            with (root / 'target_vina_manifest.csv').open(newline='') as handle:
+            with _layout(root).vina_manifest.open(newline='') as handle:
                 manifest = list(csv.DictReader(handle))
             self.assertEqual(len(manifest), len(valid))
             self.assertEqual(manifest[0]['box_padding'], '5.0')
             self.assertEqual(manifest[0]['hydrogen_policy'], 'keep')
             self.assertEqual(manifest[0]['spacing'], '0.375')
             self.assertEqual(manifest[3]['receptor_chains'], 'A;B')
-            with (root / 'target_vina_results.csv').open(newline='') as handle:
+            with _layout(root).vina_results.open(newline='') as handle:
                 results = list(csv.DictReader(handle))
             self.assertEqual([r['status'] for r in results],
                              ['ok', 'ok', 'ok', 'ok', 'error'])
@@ -245,7 +253,7 @@ class VinaRankingTests(unittest.TestCase):
             self.assertEqual(results[0]['protocol_id'],
                              'rigid_meeko_vina_residue_sum_v1')
             self.assertEqual(results[0]['vina_version'], '1.2.7')
-            with (root / 'target_vina_ranked.csv').open(newline='') as handle:
+            with _layout(root).vina_ranked.open(newline='') as handle:
                 rows = list(csv.DictReader(handle))
             self.assertEqual([r['id'] for r in rows],
                              [r['id'] for r in ranked])
@@ -260,17 +268,17 @@ class VinaRankingTests(unittest.TestCase):
                 (root / f'target_vina_{suffix}.csv').write_text('old report\n')
 
             def fail_jobs(jobs):
-                self.assertFalse((root / 'target_vina_ranked.csv').exists())
-                self.assertFalse((root / 'target_vina_results.csv').exists())
+                self.assertFalse(_layout(root).vina_ranked.exists())
+                self.assertFalse(_layout(root).vina_results.exists())
                 return [failure(job, WorkflowConfig(), RuntimeError('failed'))
                         for job in jobs]
 
-            with patch('vina_scoring.batch.BatchRunner.run',
+            with patch('allopep.scoring.service.BatchRunner.run',
                        side_effect=fail_jobs), self.assertRaisesRegex(
                            RuntimeError, 'All 1 Vina scoring jobs failed'):
-                rank_pepglad_outputs([design(pdb)], root, 'target')
-            self.assertFalse((root / 'target_vina_ranked.csv').exists())
-            with (root / 'target_vina_results.csv').open(newline='') as handle:
+                rank_pepglad_outputs([design(pdb)], _layout(root))
+            self.assertFalse(_layout(root).vina_ranked.exists())
+            with _layout(root).vina_results.open(newline='') as handle:
                 result = next(csv.DictReader(handle))
             self.assertIn('failed', result['error'])
 
@@ -281,32 +289,32 @@ class VinaRankingTests(unittest.TestCase):
                 pdb = root / 'target.pdb'
                 pdb.write_text('ATOM      1  CA  ALA A   1      0.000   0.000   0.000\n'
                                'ATOM      2  CA  ALA B   1      0.000   0.000   0.000\n')
-                with patch('vina_scoring.batch.BatchRunner.run', side_effect=(
+                with patch('allopep.scoring.service.BatchRunner.run', side_effect=(
                         lambda jobs: [self.score(job, total) for job in jobs])), \
                      self.assertRaisesRegex(RuntimeError, 'All 1 Vina'):
-                    rank_pepglad_outputs([design(pdb)], root, 'target')
-                with (root / 'target_vina_results.csv').open(newline='') as handle:
+                    rank_pepglad_outputs([design(pdb)], _layout(root))
+                with _layout(root).vina_results.open(newline='') as handle:
                     result = next(csv.DictReader(handle))
                 self.assertEqual(result['status'], 'error')
                 self.assertIn('non-finite', result['error'])
 
     def test_missing_vina_dependency_is_actionable(self):
-        with patch('vina_ranking.importlib.import_module',
+        with patch('allopep.ranking.importlib.import_module',
                    side_effect=ImportError('missing vina')), \
              self.assertRaisesRegex(RuntimeError, 'conda env update'):
             check_vina_dependencies()
 
     def test_main_checks_vina_before_preparing_input(self):
-        with patch('allopep.check_vina_dependencies',
+        with patch('allopep.cli.check_vina_dependencies',
                    side_effect=RuntimeError('Vina missing')), \
-             patch('allopep.prepare_input_pdb') as prepare, \
+             patch('allopep.cli.prepare_input_pdb') as prepare, \
              self.assertRaisesRegex(RuntimeError, 'Vina missing'):
             main(['target.pdb'])
         prepare.assert_not_called()
 
     def test_validation_only_skips_scoring_dependency_check(self):
-        with patch('allopep.check_vina_dependencies') as check, \
-             patch('allopep.prepare_input_pdb', side_effect=FileNotFoundError), \
+        with patch('allopep.cli.check_vina_dependencies') as check, \
+             patch('allopep.cli.prepare_input_pdb', side_effect=FileNotFoundError), \
              self.assertRaises(FileNotFoundError):
             main(['target.pdb', '--validate-existing'])
         check.assert_not_called()
@@ -327,21 +335,21 @@ class VinaRankingTests(unittest.TestCase):
             previous_dir = os.getcwd()
             try:
                 os.chdir(directory)
-                with patch('allopep.check_vina_dependencies', return_value='/fake/ia'), \
-                     patch('allopep.prepare_input_pdb', return_value='/fake/target.pdb'), \
-                     patch('allopep.run_gaps.run_gaps'), \
-                     patch('allopep.run_gaps.load_scored_residues',
+                with patch('allopep.cli.check_vina_dependencies', return_value='/fake/ia'), \
+                     patch('allopep.cli.prepare_input_pdb', return_value='/fake/target.pdb'), \
+                     patch('allopep.cli.gaps.run_gaps'), \
+                     patch('allopep.cli.gaps.load_scored_residues',
                            return_value=residues), \
-                     patch('allopep.run_gaps.select_guidance_contexts',
+                     patch('allopep.cli.gaps.select_guidance_contexts',
                            wraps=select_guidance_contexts) as selector, \
-                     patch('allopep.run_pepglad', return_value=SimpleNamespace(
+                     patch('allopep.cli.run_pepglad', return_value=SimpleNamespace(
                          selected=[], shortfall=True, summary_path='summary.json')) as pepglad, \
-                     patch('allopep.write_pymol_session', return_value='session.pse'), \
-                     patch('allopep.run_openstructure_validation', return_value=[]):
+                     patch('allopep.cli.write_pymol_session', return_value='session.pse'), \
+                     patch('allopep.cli.run_openstructure_validation', return_value=[]):
                     main(['target.pdb'])
                 self.assertEqual(selector.call_args.kwargs, {'max_rank': 'all'})
-                self.assertEqual(pepglad.call_args.args[4], expected)
-                pockets = pepglad.call_args.args[4]
+                self.assertEqual(pepglad.call_args.args[3], expected)
+                pockets = pepglad.call_args.args[3]
                 self.assertEqual(len(pockets), 4)
                 self.assertEqual(pockets[0].seed, residues[0])
                 self.assertEqual(pockets[0].residues, tuple(residues[:2]))
@@ -353,11 +361,11 @@ class VinaRankingTests(unittest.TestCase):
             root = Path(directory)
             pdb = root / 'target_0.pdb'
             pdb.write_text('ATOM      1  CA  ALA A   1      0.000   0.000   0.000\n')
-            with patch('vina_scoring.batch.BatchRunner.run') as run, \
+            with patch('allopep.scoring.service.BatchRunner.run') as run, \
                  self.assertRaisesRegex(RuntimeError, 'All 1 Vina scoring jobs failed'):
-                rank_pepglad_outputs([design(pdb)], root, 'target')
+                rank_pepglad_outputs([design(pdb)], _layout(root))
             run.assert_not_called()
-            with (root / 'target_vina_results.csv').open(newline='') as handle:
+            with _layout(root).vina_results.open(newline='') as handle:
                 result = next(csv.DictReader(handle))
             self.assertIn('PDB chains', result['error'])
 
@@ -380,11 +388,13 @@ class VinaRankingTests(unittest.TestCase):
                 csv_path.write_text('path,status,peptide_chain\n' +
                                     str(output.resolve()) + ',valid,C\n')
 
-            with patch('allopep.shutil.which', return_value='/usr/bin/ost'), \
-                 patch('allopep.subprocess.run', side_effect=write_result):
+            with patch('allopep.validation_reports.shutil.which',
+                       return_value='/usr/bin/ost'), \
+                 patch('allopep.validation_reports.subprocess.run',
+                       side_effect=write_result):
                 generated = load_design_outputs([(output, 1, 0)])
                 valid = run_openstructure_validation(
-                    generated, score_dir, 'target', None, input_pdb)
+                    generated, score_dir, _layout(root), None, input_pdb)
             manifest = json.loads((score_dir / 'target_pepglad_validation_manifest.json').read_text())
             self.assertEqual(valid, generated)
             self.assertEqual(manifest[0]['pep_seq'], 'LHLKA')
@@ -394,21 +404,23 @@ class VinaRankingTests(unittest.TestCase):
     def test_existing_outputs_reject_missing_samples(self):
         with tempfile.TemporaryDirectory() as directory:
             site = (Path(directory) / 'target_PepGLAD_outputs' /
-                    'target_allosteric_site_1_codesign')
+                    'target_allosteric_site_1_codesign' / 'round_000001')
             site.mkdir(parents=True)
+            atomic_json(site / 'round.json',
+                        {'site': 1, 'start': 0, 'count': 2})
             (site / 'target_0.pdb').touch()
             (site / 'summary.jsonl').write_text(
                 '{"id":"target_0"}\n{"id":"target_1"}\n', encoding='utf-8'
             )
             with self.assertRaisesRegex(ValueError, 'missing=.*target_1'):
-                find_existing_pepglad_outputs(Path(directory), 'target')
+                find_existing_pepglad_outputs(_layout(Path(directory)))
             (site / 'target_1.pdb').touch()
             (site / 'summary.jsonl').write_text(''.join(json.dumps({
                 'id': f'target_{sample}', 'pep_seq': 'LHLKA',
                 'pep_chain': 'B', 'rec_chains': ['A'],
             }) + '\n' for sample in (0, 1)))
             self.assertEqual(find_existing_pepglad_outputs(
-                Path(directory), 'target'), [
+                _layout(Path(directory))), [
                     design(site / 'target_0.pdb'),
                     design(site / 'target_1.pdb', sample=1),
                 ])
@@ -416,8 +428,10 @@ class VinaRankingTests(unittest.TestCase):
     def test_existing_outputs_accept_reported_invalid_sample(self):
         with tempfile.TemporaryDirectory() as directory:
             site = (Path(directory) / 'target_PepGLAD_outputs' /
-                    'target_allosteric_site_1_codesign')
+                    'target_allosteric_site_1_codesign' / 'round_000001')
             site.mkdir(parents=True)
+            atomic_json(site / 'round.json',
+                        {'site': 1, 'start': 0, 'count': 2})
             (site / 'target_0.pdb').touch()
             (site / 'summary.jsonl').write_text(''.join(json.dumps({
                 'id': f'target_{sample}', 'pep_seq': 'LHLKA',
@@ -426,10 +440,10 @@ class VinaRankingTests(unittest.TestCase):
                    if sample == 1 else {}),
             }) + '\n' for sample in (0, 1)))
             self.assertEqual(find_existing_pepglad_outputs(
-                Path(directory), 'target'), [design(site / 'target_0.pdb')])
+                _layout(Path(directory))), [design(site / 'target_0.pdb')])
             (site / 'target_1.pdb').touch()
             with self.assertRaisesRegex(ValueError, 'extra=.*target_1'):
-                find_existing_pepglad_outputs(Path(directory), 'target')
+                find_existing_pepglad_outputs(_layout(Path(directory)))
 
     def test_summary_loader_rejects_duplicate_and_missing_ids(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -454,7 +468,7 @@ class VinaRankingTests(unittest.TestCase):
                        '-n 5 --max_num_peptides 4', '--round-timeout-seconds 0',
                        '--peptide-chain AA'):
             with self.subTest(option=option), \
-                 patch('allopep.prepare_input_pdb') as prepare:
+                 patch('allopep.cli.prepare_input_pdb') as prepare:
                 with self.assertRaises(ValueError):
                     main(['target.pdb', *option.split()])
                 prepare.assert_not_called()

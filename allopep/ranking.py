@@ -1,10 +1,10 @@
 """Score physically valid PepGLAD complexes with AlloPep's Vina scorer."""
 
-import csv
 import importlib
 import math
 from pathlib import Path
 
+from .fileio import atomic_csv, sha256
 
 IDENTITY_FIELDS = ('site', 'sample', 'path')
 
@@ -14,24 +14,13 @@ def check_vina_dependencies():
     try:
         for module in ('gemmi', 'meeko', 'psutil', 'rdkit', 'scipy', 'vina'):
             importlib.import_module(module)
-        from vina_scoring.preparation import find_meeko_receptor_preparer
+        from .scoring.preparation import find_meeko_receptor_preparer
         find_meeko_receptor_preparer()
     except (ImportError, OSError, RuntimeError) as exc:
         raise RuntimeError(
             'Vina scoring dependencies are unavailable; update the allopep '
             'environment with conda env update -n allopep -f environment.yml: '
             f'{exc}') from exc
-
-
-def _write_csv(path, fields, rows):
-    """Replace a report only after the complete CSV has been written."""
-    temporary = path.with_name(path.name + '.tmp')
-    with temporary.open('w', newline='', encoding='utf-8') as handle:
-        writer = csv.DictWriter(handle, fieldnames=fields,
-                                extrasaction='ignore')
-        writer.writeheader()
-        writer.writerows(rows)
-    temporary.replace(path)
 
 
 def _check_chains(design):
@@ -45,24 +34,22 @@ def _check_chains(design):
                          f'PepGLAD chains {sorted(expected)}')
 
 
-def rank_pepglad_outputs(valid_designs, score_dir, prefix):
+def rank_pepglad_outputs(valid_designs, layout):
     """Score selected valid designs and rank finite Vina totals ascending.
 
     Each pose runs in a disposable worker through the shared scorer. A
     scoring failure never changes the physical-validity or sampling policy.
     """
-    from vina_scoring.batch import BatchRunner
-    from vina_scoring.models import CombinedStructure, ScoreJob, WorkflowConfig
-    from vina_scoring.preparation import sha256_file
-    from vina_scoring.results import (
+    from .scoring.service import BatchRunner
+    from .scoring.models import CombinedStructure, ScoreJob, WorkflowConfig
+    from .scoring.records import (
         PROTOCOL_ID, RESULT_FIELDS, failure, result_record,
     )
 
-    score_dir = Path(score_dir)
-    score_dir.mkdir(parents=True, exist_ok=True)
-    manifest_file = score_dir / f'{prefix}_vina_manifest.csv'
-    result_file = score_dir / f'{prefix}_vina_results.csv'
-    ranked_file = score_dir / f'{prefix}_vina_ranked.csv'
+    layout.score_dir.mkdir(parents=True, exist_ok=True)
+    manifest_file = layout.vina_manifest
+    result_file = layout.vina_results
+    ranked_file = layout.vina_ranked
     for report in (manifest_file, result_file, ranked_file):
         report.unlink(missing_ok=True)
     if not valid_designs:
@@ -80,7 +67,7 @@ def rank_pepglad_outputs(valid_designs, score_dir, prefix):
         digest = ''
         try:
             _check_chains(design)
-            digest = sha256_file(design.path)
+            digest = sha256(design.path)
         except (OSError, ValueError) as exc:
             preflight_failures.append(failure(job, config, exc))
         else:
@@ -94,11 +81,11 @@ def rank_pepglad_outputs(valid_designs, score_dir, prefix):
             'hydrogen_policy': config.hydrogen_policy, 'ph': config.ph,
             'box_padding': config.box_padding, 'spacing': config.spacing,
         })
-    _write_csv(manifest_file, tuple(manifest[0]), manifest)
+    atomic_csv(manifest_file, tuple(manifest[0]), manifest)
 
     outcomes = preflight_failures
     if jobs:
-        outcomes += BatchRunner(config, max_workers=1).run(jobs)
+        outcomes += BatchRunner(config).run(jobs)
     designs = {design.job_id: design for design in valid_designs}
     records = []
     for outcome in sorted(outcomes, key=lambda item: item.job.index):
@@ -117,7 +104,7 @@ def rank_pepglad_outputs(valid_designs, score_dir, prefix):
                 row['score_total'] = score
         records.append(row)
     fields = (*IDENTITY_FIELDS, *RESULT_FIELDS)
-    _write_csv(result_file, fields, records)
+    atomic_csv(result_file, fields, records)
     ranked = [row.copy() for row in records if row['status'] == 'ok']
     if not ranked:
         raise RuntimeError(f'All {len(records)} Vina scoring jobs failed; '
@@ -126,5 +113,5 @@ def rank_pepglad_outputs(valid_designs, score_dir, prefix):
         row['score_total'], row['site'], row['sample']))
     for rank, row in enumerate(ranked, 1):
         row['rank'] = rank
-    _write_csv(ranked_file, ('rank', *fields), ranked)
+    atomic_csv(ranked_file, ('rank', *fields), ranked)
     return ranked

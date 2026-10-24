@@ -57,7 +57,7 @@ through `conda run`; their names and capitalization matter.
 
 ## Bundled Vina scoring
 
-`vina_scoring/` contains the rigid-pose scorer. `environment.yml` installs
+`allopep/scoring/` contains the rigid-pose scorer. `environment.yml` installs
 Meeko 0.8.0 and Vina 1.2.7 directly. A design or reranking run checks these
 dependencies and Meeko's receptor-preparation executable before processing
 structures. `--validate-existing` skips scoring dependency checks.
@@ -73,11 +73,11 @@ conda env update -n allopep -f environment.yml
 From the repository root:
 
 ```bash
-conda run --no-capture-output -n allopep python allopep.py --help
+conda run --no-capture-output -n allopep python -m allopep --help
 conda run --no-capture-output -n allopep python -c \
   "import ost, mmtbx, freesasa, pymol; print('Validation and visualization imports OK')"
 conda run --no-capture-output -n allopep python -c \
-  "from vina_ranking import check_vina_dependencies; check_vina_dependencies()"
+  "from allopep.ranking import check_vina_dependencies; check_vina_dependencies()"
 conda run --no-capture-output -n gaps python -c \
   "import torch; print('GAPS CUDA available:', torch.cuda.is_available())"
 conda run --no-capture-output -n PepGLAD python -c \

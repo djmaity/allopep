@@ -6,6 +6,18 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+# A design PepGLAD itself reported as unusable; it keeps no PDB.
+REJECTED = ('invalid', 'error')
+# OpenMM stamps every design it relaxes, so a missing stamp means the
+# relaxation step never finished for that file.
+RELAXED_REMARK = 'REMARK   1 CREATED WITH OPENMM'
+
+
+def is_relaxed(path):
+    """Whether OpenMM finished relaxing this design."""
+    with Path(path).open(encoding='utf-8') as handle:
+        return handle.readline().startswith(RELAXED_REMARK)
+
 
 @dataclass(frozen=True)
 class DesignOutput:
@@ -25,7 +37,8 @@ class DesignOutput:
         return str(self.path.resolve())
 
 
-def _summary_records(summary_path):
+def summary_records(summary_path):
+    """Index a PepGLAD summary by design ID, rejecting repeats."""
     records = {}
     for line_number, line in enumerate(summary_path.read_text(encoding='utf-8').splitlines(), 1):
         if not line.strip():
@@ -49,7 +62,7 @@ def removed_structures(directory, records=None):
     removed = json.loads(journal.read_text(encoding='utf-8'))
     if not isinstance(removed, dict):
         raise ValueError(f'Invalid removed-structure journal: {journal}')
-    records = _summary_records(directory / 'summary.jsonl') if records is None else records
+    records = summary_records(directory / 'summary.jsonl') if records is None else records
     validation = None
     for relative, item in removed.items():
         path = Path(relative)
@@ -57,12 +70,12 @@ def removed_structures(directory, records=None):
                 or path.parts not in ((path.name,), ('invalid_designs', path.name))
                 or not (directory / path).resolve().is_relative_to(directory.resolve())
                 or path.stem not in records or not isinstance(item, dict)
-                or item.get('status') not in ('invalid', 'error')
+                or item.get('status') not in REJECTED
                 or not isinstance(item.get('sha256'), str)
                 or not re.fullmatch('[0-9a-f]{64}', item['sha256'])):
             raise ValueError(f'Invalid removed-structure entry in {journal}: {relative}')
         record = records[path.stem]
-        if record.get('status') in ('invalid', 'error'):
+        if record.get('status') in REJECTED:
             status = record['status']
         else:
             if validation is None:
@@ -80,6 +93,26 @@ def removed_structures(directory, records=None):
     return removed
 
 
+def removed_top_level_stems(directory, records=None):
+    """Stems of rejected PDBs journalled as removed from the directory itself."""
+    return {Path(relative).stem
+            for relative in removed_structures(directory, records)
+            if len(Path(relative).parts) == 1}
+
+
+def check_summary_matches_pdbs(directory, records):
+    """Require the PDBs present to be exactly the designs not rejected."""
+    directory = Path(directory)
+    removed = removed_top_level_stems(directory, records)
+    actual = {path.stem for path in directory.glob('*.pdb')} - removed
+    expected = {identifier for identifier, record in records.items()
+                if record.get('status') not in REJECTED} - removed
+    if actual != expected:
+        raise ValueError(f'PepGLAD PDBs do not match {directory}: '
+                         f'missing={sorted(expected - actual)}, '
+                         f'extra={sorted(actual - expected)}')
+
+
 def load_design_outputs(generated, *, exact=False, summary_paths=()):
     """Pair output PDBs with their summary records, caching each summary."""
     generated = [(Path(path), site, sample) for path, site, sample in generated]
@@ -87,21 +120,10 @@ def load_design_outputs(generated, *, exact=False, summary_paths=()):
     for summary_path in [*summary_paths, *(path.parent / 'summary.jsonl' for path, _, _ in generated)]:
         summary_path = Path(summary_path)
         if summary_path not in summaries:
-            summaries[summary_path] = _summary_records(summary_path)
+            summaries[summary_path] = summary_records(summary_path)
     if exact:
         for summary_path, records in summaries.items():
-            removed = {Path(relative).stem for relative in
-                       removed_structures(summary_path.parent, records)
-                       if len(Path(relative).parts) == 1}
-            actual = {path.stem for path in summary_path.parent.glob('*.pdb')}
-            expected = {identifier for identifier, record in records.items()
-                        if record.get('status') not in ('invalid', 'error')}
-            actual -= removed
-            expected -= removed
-            if actual != expected:
-                raise ValueError(f'PepGLAD PDBs do not match {summary_path}: '
-                                 f'missing={sorted(expected - actual)}, '
-                                 f'extra={sorted(actual - expected)}')
+            check_summary_matches_pdbs(summary_path.parent, records)
 
     designs = []
     seen = set()
@@ -114,7 +136,7 @@ def load_design_outputs(generated, *, exact=False, summary_paths=()):
             raise ValueError(f'Duplicate PepGLAD site/sample: {site}/{sample}')
         seen.add((site, sample))
         record = records[path.stem]
-        if record.get('status') in ('invalid', 'error'):
+        if record.get('status') in REJECTED:
             raise ValueError(f'Invalid PepGLAD design still has a PDB: {path}')
         try:
             sequence = record['pep_seq']
@@ -142,7 +164,7 @@ def load_round_outputs(directory, site, prefix, start, count, *, partial=False,
     summary = directory / 'summary.jsonl'
     if not summary.exists() and partial and not list(directory.glob('*.pdb')):
         return [], {}
-    records = _summary_records(summary)
+    records = summary_records(summary)
     expected = {f'{prefix}_{index}' for index in range(count)}
     if not set(records) <= expected or (not partial and set(records) != expected):
         raise ValueError(f'Saved PepGLAD sample IDs differ: {summary}')
@@ -150,7 +172,7 @@ def load_round_outputs(directory, site, prefix, start, count, *, partial=False,
     generated = [(directory / f'{prefix}_{index}.pdb', site, start + index)
                  for index in range(count)
                  if (records.get(f'{prefix}_{index}', {}).get('status')
-                     not in ('invalid', 'error'))
+                     not in REJECTED)
                  and ((directory / f'{prefix}_{index}.pdb').is_file()
                       or (include_removed and f'{prefix}_{index}.pdb' in removed))
                  and (include_removed or f'{prefix}_{index}.pdb' not in removed)]
@@ -159,16 +181,18 @@ def load_round_outputs(directory, site, prefix, start, count, *, partial=False,
 
 
 def site_rounds(site_dir, prefix):
-    """Discover legacy outputs and reserved round directories without guessing IDs."""
+    """Discover reserved round directories without guessing sample IDs.
+
+    Designs live only in ``round_NNNNNN`` subdirectories. PDBs or a
+    summary directly in the site directory are the pre-round layout,
+    which is no longer read.
+    """
     site_dir = Path(site_dir)
     rounds = []
-    summary = site_dir / 'summary.jsonl'
-    if summary.is_file():
-        count = len(_summary_records(summary))
-        rounds.append({'directory': site_dir, 'start': 0, 'count': count,
-                       'legacy': True})
-    elif list(site_dir.glob('*.pdb')):
-        raise ValueError(f'Missing PepGLAD summary in {site_dir}')
+    if (site_dir / 'summary.jsonl').is_file() or list(site_dir.glob('*.pdb')):
+        raise ValueError(
+            f'Unsupported PepGLAD outputs directly in {site_dir}; designs '
+            'belong in round_NNNNNN subdirectories')
     for directory in sorted(site_dir.glob('round_*')):
         if not directory.is_dir():
             continue
@@ -176,8 +200,7 @@ def site_rounds(site_dir, prefix):
         start, count = metadata['start'], metadata['count']
         if type(start) is not int or type(count) is not int or start < 0 or count < 1:
             raise ValueError(f'Invalid reserved sample range in {directory}')
-        rounds.append({'directory': directory, 'start': start, 'count': count,
-                       'legacy': False})
+        rounds.append({'directory': directory, 'start': start, 'count': count})
     end = 0
     for entry in sorted(rounds, key=lambda entry: entry['start']):
         if entry['start'] < end:

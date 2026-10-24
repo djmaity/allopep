@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from GAPS.src.structure import cle_structure, encode_bfactor, split_by_chain
 from GAPS.src.structure_io import save_pdb
-from gaps_predict import score_records
+from allopep.gaps_predict import score_records
 
 
 class RawGapsScoresTests(unittest.TestCase):

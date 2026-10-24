@@ -185,6 +185,6 @@ Passing these checks is an operational physical-validity result. It does not
 establish native pose recovery, affinity, allosteric function, or stability.
 See [Scientific interpretation](scientific-scope.md).
 
-Implementation: `pepglad_validation.py::validation_reasons()` defines the gate;
+Implementation: `allopep/validation.py::validation_reasons()` defines the gate;
 the measurement helpers in that module define each metric. Threshold meanings
 also depend on the installed `ost.mol.alg.stereochemistry` implementation.

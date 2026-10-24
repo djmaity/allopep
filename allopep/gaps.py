@@ -10,10 +10,15 @@ import freesasa
 import numpy as np
 from Bio.PDB import PDBParser
 
+from .layout import REPO_ROOT
+
 
 _MINIMUM_GAPS_SCORE = 0.5
 _MINIMUM_POCKET_SASA = 0.0
 _POCKET_CONNECTION_RADIUS = 8.0
+# GAPS stores float32 C-alpha coordinates of three-decimal PDB values, so a
+# faithful sidecar round-trips well inside this tolerance.
+_CA_TOLERANCE_A = 0.01
 
 
 @dataclass(frozen=True)
@@ -54,7 +59,8 @@ def _residue_sasa(residue, areas):
     return value if math.isfinite(value) else 0.0
 
 
-def _read_score_records(scores_json):
+def load_score_records(scores_json):
+    """Read the GAPS score sidecar and check only its schema."""
     payload = json.loads(Path(scores_json).read_text(encoding='utf-8'))
     if (not isinstance(payload, dict) or type(payload.get('schema_version')) is not int
             or payload['schema_version'] != 1
@@ -63,8 +69,40 @@ def _read_score_records(scores_json):
     return payload['residues']
 
 
-def _scored_residue(record, model, areas, seen):
-    """Verify one sidecar record against the unmodified input structure."""
+def load_structure_model(input_pdb):
+    """Parse a receptor PDB and return its structure and first model."""
+    input_pdb = Path(input_pdb)
+    structure = PDBParser(QUIET=True).get_structure(input_pdb.stem, str(input_pdb))
+    model = next(structure.get_models(), None)
+    if model is None:
+        raise ValueError(f'No model found in {input_pdb}')
+    return structure, model
+
+
+@dataclass(frozen=True)
+class CheckedRecord:
+    """One sidecar record verified against the unmodified input structure."""
+
+    chain: str
+    number: int
+    icode: str
+    resname: str
+    score: float
+    ca: tuple[float, float, float] | None
+    residue: object
+
+    @property
+    def key(self):
+        return self.chain, self.number, self.icode
+
+
+def checked_residue(record, model, seen):
+    """Verify one sidecar record against the unmodified input structure.
+
+    ``seen`` accumulates residue keys so repeats are rejected across a
+    whole sidecar. A record without a C-alpha mapping is returned with
+    ``ca`` set to None; callers that need coordinates skip those.
+    """
     try:
         chain = record['chain']
         number = record['number']
@@ -91,36 +129,35 @@ def _scored_residue(record, model, areas, seen):
     if residue.resname != resname:
         raise ValueError(f'GAPS residue type differs from input PDB: {key}')
     if ca is None:
-        return None
+        return CheckedRecord(chain, number, icode, resname, float(score),
+                             None, residue)
     if 'CA' not in residue or not isinstance(ca, list) or len(ca) != 3:
         raise ValueError(f'Invalid C-alpha mapping for GAPS residue: {key}')
     if not all(type(x) in (int, float) and math.isfinite(x) for x in ca):
         raise ValueError(f'Invalid C-alpha coordinates for GAPS residue: {key}')
-    if np.linalg.norm(residue['CA'].coord - np.asarray(ca)) > 0.05:
-        raise ValueError(f'GAPS C-alpha differs from input PDB: {key}')
-    return ScoredResidue(
-        chain, number, icode, float(score), tuple(map(float, ca)),
-        _residue_sasa(residue, areas),
-    )
+    if math.dist(residue['CA'].coord, ca) > _CA_TOLERANCE_A:
+        raise ValueError(
+            f'GAPS score coordinates differ from original PDB: {key}')
+    return CheckedRecord(chain, number, icode, resname, float(score),
+                         tuple(map(float, ca)), residue)
 
 
 def load_scored_residues(input_pdb, scores_json):
     """Check full-precision GAPS records against the original receptor PDB."""
-    input_pdb = Path(input_pdb)
-    records = _read_score_records(scores_json)
-
-    structure = PDBParser(QUIET=True).get_structure(input_pdb.stem, str(input_pdb))
-    model = next(structure.get_models(), None)
-    if model is None:
-        raise ValueError(f'No model found in {input_pdb}')
+    records = load_score_records(scores_json)
+    structure, model = load_structure_model(input_pdb)
     areas = freesasa.calcBioPDB(structure)[0].residueAreas()
 
     scored = []
     seen = set()
     for record in records:
-        residue = _scored_residue(record, model, areas, seen)
-        if residue is not None:
-            scored.append(residue)
+        checked = checked_residue(record, model, seen)
+        if checked.ca is None:
+            continue
+        scored.append(ScoredResidue(
+            checked.chain, checked.number, checked.icode, checked.score,
+            checked.ca, _residue_sasa(checked.residue, areas),
+        ))
     if not scored:
         raise ValueError(f'No C-alpha-bearing GAPS residues in {scores_json}')
     return scored
@@ -172,11 +209,15 @@ def select_guidance_contexts(input_pdb, scores_json, max_rank='all'):
 
 
 def run_gaps(pdb_filepath, out_dir='.', pytorch_device='cuda'):
-    """Run GAPS prediction in its dedicated Conda environment."""
+    """Run GAPS prediction in its dedicated Conda environment.
+
+    ``cwd`` is the repository root so that the child's ``sys.path`` can
+    resolve both the vendored ``GAPS`` package and ``allopep`` itself.
+    """
     subprocess.run([
         'conda', 'run', '--no-capture-output', '-n', 'gaps', 'python',
-        str(Path(__file__).with_name('gaps_predict.py')),
+        '-m', 'allopep.gaps_predict',
         '--pdb', str(Path(pdb_filepath).resolve()),
         '--out-dir', str(Path(out_dir).resolve()),
         '--device', pytorch_device,
-    ], check=True)
+    ], check=True, cwd=REPO_ROOT)

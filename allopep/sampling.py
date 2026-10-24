@@ -2,53 +2,33 @@
 
 import csv
 import fcntl
-import hashlib
 import json
-import os
+import re
 import time
 from dataclasses import dataclass
 from contextlib import contextmanager
 from pathlib import Path
 
-from pepglad_outputs import load_round_outputs, removed_structures, site_rounds
-
-
-ROOT = Path(__file__).resolve().parent
+from .fileio import atomic_json, atomic_path, sha256
+from .layout import PACKAGE_DIR, REPO_ROOT
+from .outputs import (REJECTED, is_relaxed, load_round_outputs,
+                      removed_structures, site_rounds)
+from .validation_reports import read_rows
 
 
 @contextmanager
-def sampling_lock(out_dir):
-    directory = Path(out_dir)
-    directory.mkdir(parents=True, exist_ok=True)
-    with (directory / '.sampling.lock').open('a') as handle:
+def sampling_lock(layout):
+    layout.root.mkdir(parents=True, exist_ok=True)
+    with layout.lock_file.open('a') as handle:
         try:
             fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as exc:
-            raise RuntimeError(f'Another sampling process is using {directory}') from exc
+            raise RuntimeError(
+                f'Another sampling process is using {layout.root}') from exc
         try:
             yield
         finally:
             fcntl.flock(handle, fcntl.LOCK_UN)
-
-
-def sha256(path):
-    digest = hashlib.sha256()
-    with Path(path).open('rb') as handle:
-        for block in iter(lambda: handle.read(1024 * 1024), b''):
-            digest.update(block)
-    return digest.hexdigest()
-
-
-def atomic_json(path, value):
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(path.name + '.tmp')
-    with temporary.open('w', encoding='utf-8') as handle:
-        json.dump(value, handle, indent=2)
-        handle.write('\n')
-        handle.flush()
-        os.fsync(handle.fileno())
-    temporary.replace(path)
 
 
 def next_round_size(target, attempted, valid, previous, cap):
@@ -67,24 +47,56 @@ def next_round_size(target, attempted, valid, previous, cap):
     return min(cap - attempted, 64, max(8, wanted))
 
 
-def require_resume(out_dir, prefix, resume):
-    outputs = Path(out_dir) / f'{prefix}_PepGLAD_outputs'
-    state = Path(out_dir) / f'{prefix}_sampling_summary.json'
+def require_resume(layout, resume):
+    outputs = layout.designs_dir
+    state = layout.sampling_summary
     if not resume and (state.exists() or (outputs.exists() and any(outputs.iterdir()))):
         raise ValueError('Existing PepGLAD outputs require --resume; '
                          'use a separate input/output prefix for a fresh run')
 
 
-def sampling_signature(args, input_pdb):
+@dataclass(frozen=True)
+class SamplingConfig:
+    """Validated generation and budget settings for one sampling run.
+
+    Error messages name the command-line options they come from, since
+    that is what the operator can change.
+    """
+
+    length_min: int
+    length_max: int
+    num_samples: int
+    max_attempts: int
+    round_timeout_seconds: int
+    peptide_chain: str | None = None
+    resume: bool = False
+
+    def __post_init__(self):
+        if self.length_min < 1 or self.length_max < self.length_min:
+            raise ValueError(
+                '--length_min must be positive and no greater than --length_max')
+        if self.num_samples < 1:
+            raise ValueError('--num_samples must be positive')
+        if self.max_attempts < self.num_samples:
+            raise ValueError(
+                '--max_num_peptides must be positive and at least --num_samples')
+        if self.round_timeout_seconds < 1:
+            raise ValueError('--round-timeout-seconds must be positive')
+        if (self.peptide_chain is not None
+                and not re.fullmatch(r'[A-Za-z0-9]', self.peptide_chain)):
+            raise ValueError('--peptide-chain must be one alphanumeric chain ID')
+
+
+def sampling_signature(config, input_pdb):
     return {
         'input_sha256': sha256(input_pdb),
-        'length_min': args.length_min, 'length_max': args.length_max,
-        'peptide_chain': args.peptide_chain,
-        'validator_sha256': sha256(ROOT / 'pepglad_validation.py'),
-        'pepglad_patch_sha256': sha256(ROOT / 'patches/PepGLAD.patch'),
-        'pepglad_api_sha256': sha256(ROOT / 'PepGLAD/api/run.py'),
-        'pepglad_model_sha256': sha256(ROOT / 'PepGLAD/models/LDM/ldm.py'),
-        'checkpoint_sha256': sha256(ROOT / 'PepGLAD/checkpoints/codesign.ckpt'),
+        'length_min': config.length_min, 'length_max': config.length_max,
+        'peptide_chain': config.peptide_chain,
+        'validator_sha256': sha256(PACKAGE_DIR / 'validation.py'),
+        'pepglad_patch_sha256': sha256(REPO_ROOT / 'patches/PepGLAD.patch'),
+        'pepglad_api_sha256': sha256(REPO_ROOT / 'PepGLAD/api/run.py'),
+        'pepglad_model_sha256': sha256(REPO_ROOT / 'PepGLAD/models/LDM/ldm.py'),
+        'checkpoint_sha256': sha256(REPO_ROOT / 'PepGLAD/checkpoints/codesign.ckpt'),
     }
 
 
@@ -96,25 +108,24 @@ class SamplingResult:
 
 
 class SamplingController:
-    def __init__(self, args, input_pdb, out_dir, prefix, contexts,
+    def __init__(self, config, input_pdb, layout, contexts,
                  generate_round, validate_round):
-        self.args = args
+        self.config = config
         self.input_pdb = input_pdb
-        self.out_dir = Path(out_dir).resolve()
-        self.prefix = prefix
-        self.target = args.num_samples
-        self.cap = args.max_num_peptides
-        self.timeout = args.round_timeout_seconds
+        self.layout = layout.resolved()
+        self.out_dir = self.layout.root
+        self.prefix = self.layout.prefix
+        self.target = config.num_samples
+        self.cap = config.max_attempts
+        self.timeout = config.round_timeout_seconds
         self.generate_round = generate_round
         self.validate_round = validate_round
-        self.summary_path = self.out_dir / f'{prefix}_sampling_summary.json'
-        self.score_dir = self.out_dir / f'{prefix}_vina_score'
-        self.sites_dir = self.out_dir / f'{prefix}_allosteric_sites'
-        self.sites_dir.mkdir(parents=True, exist_ok=True)
-        self.score_dir.mkdir(parents=True, exist_ok=True)
+        self.summary_path = self.layout.sampling_summary
+        self.layout.sites_dir.mkdir(parents=True, exist_ok=True)
+        self.layout.score_dir.mkdir(parents=True, exist_ok=True)
         self.accepted = {}
-        signature = sampling_signature(args, input_pdb)
-        require_resume(self.out_dir, prefix, args.resume)
+        signature = sampling_signature(config, input_pdb)
+        require_resume(self.layout, config.resume)
         if self.summary_path.exists():
             self.state = json.loads(self.summary_path.read_text())
             if self.state.get('version') != 1 or self.state.get('signature') != signature:
@@ -128,9 +139,8 @@ class SamplingController:
             raise ValueError('No GAPS sites selected for peptide generation')
         for rank, context in enumerate(contexts, 1):
             pocket = context.as_pepglad_pocket()
-            pocket_file = self.sites_dir / f'{prefix}_allosteric_site_{rank}.json'
-            site_dir = (self.out_dir / f'{prefix}_PepGLAD_outputs'
-                        / f'{prefix}_allosteric_site_{rank}_codesign')
+            pocket_file = self.layout.pocket_file(rank)
+            site_dir = self.layout.site_dir(rank)
             if site_dir.exists() or len(self.state['sites']) >= rank:
                 if not pocket_file.is_file() or json.loads(pocket_file.read_text()) != pocket:
                     raise ValueError(f'Saved PepGLAD pocket differs for site {rank}: {pocket_file}')
@@ -138,11 +148,11 @@ class SamplingController:
                 atomic_json(pocket_file, pocket)
             if len(self.state['sites']) < rank:
                 rounds = []
-                for entry in site_rounds(site_dir, prefix):
+                for entry in site_rounds(site_dir, self.prefix):
                     rounds.append({
                         'directory': str(entry['directory'].relative_to(self.out_dir)),
                         'start': entry['start'], 'count': entry['count'],
-                        'status': 'reserved', 'legacy': entry['legacy'],
+                        'status': 'reserved',
                     })
                 self.state['sites'].append({'site': rank, 'pocket': pocket, 'rounds': rounds})
             site = self.state['sites'][rank - 1]
@@ -186,28 +196,22 @@ class SamplingController:
         atomic_json(self.summary_path, self.state)
 
     def _report_paths(self, directory):
-        return tuple(directory / f'{self.prefix}_pepglad_validation{suffix}'
-                     for suffix in ('.csv', '.jsonl', '_manifest.json'))
+        return self.layout.validation_reports(directory)
 
     def _read_validation(self, directory, designs):
         csv_path, jsonl_path, _ = self._report_paths(directory)
-        with csv_path.open(newline='', encoding='utf-8') as handle:
-            reader = csv.DictReader(handle)
-            fields, rows = reader.fieldnames, list(reader)
+        fields, rows, by_path = read_rows(csv_path, designs)
         details = [json.loads(line) for line in jsonl_path.read_text().splitlines()
                    if line.strip()]
-        by_path = {design.resolved_path: design for design in designs}
-        if (not fields or len(rows) != len(by_path)
-                or {row['path'] for row in rows} != set(by_path)
-                or len(details) != len(rows)
+        if (len(details) != len(rows)
                 or {entry['result']['path'] for entry in details} != set(by_path)):
-            raise ValueError(f'Validation reports differ from generated designs: {directory}')
+            raise ValueError(f'Validation details differ from generated designs: {directory}')
         accepted = []
         removed = removed_structures(directory)
         for row in rows:
             design = by_path[row['path']]
-            if (row['status'] not in ('valid', 'invalid', 'error')
-                    or int(row['site']) != design.site or int(row['sample']) != design.sample):
+            if (int(row['site']) != design.site
+                    or int(row['sample']) != design.sample):
                 raise ValueError(f'Invalid validation status or sample metadata: {csv_path}')
             if row['status'] != 'error':
                 digest = (sha256(design.path) if design.path.is_file()
@@ -224,16 +228,15 @@ class SamplingController:
 
     def _finish_round(self, site, entry, *, deadline, fresh=False):
         directory = self._directory(entry)
-        if not entry.get('legacy'):
-            metadata = {'site': site['site'], 'start': entry['start'], 'count': entry['count']}
-            metadata_path = directory / 'round.json'
-            if metadata_path.exists():
-                if json.loads(metadata_path.read_text()) != metadata:
-                    raise ValueError(f'Saved round metadata differs: {metadata_path}')
-            elif entry['status'] != 'validated':
-                atomic_json(metadata_path, metadata)
-            else:
-                raise ValueError(f'Saved round metadata missing: {metadata_path}')
+        metadata = {'site': site['site'], 'start': entry['start'], 'count': entry['count']}
+        metadata_path = directory / 'round.json'
+        if metadata_path.exists():
+            if json.loads(metadata_path.read_text()) != metadata:
+                raise ValueError(f'Saved round metadata differs: {metadata_path}')
+        elif entry['status'] != 'validated':
+            atomic_json(metadata_path, metadata)
+        else:
+            raise ValueError(f'Saved round metadata missing: {metadata_path}')
         designs, records = load_round_outputs(
             directory, site['site'], self.prefix, entry['start'], entry['count'],
             partial=not fresh, include_removed=True)
@@ -241,10 +244,9 @@ class SamplingController:
         for design in designs:
             if not design.path.is_file() and design.path.name in removed:
                 continue
-            with design.path.open(encoding='utf-8') as handle:
-                if not handle.readline().startswith('REMARK   1 CREATED WITH OPENMM'):
-                    raise RuntimeError(f'PepGLAD site {site["site"]} has unrelaxed samples; '
-                                       f'run recover_pepglad_relaxation.py on {directory}')
+            if not is_relaxed(design.path):
+                raise RuntimeError(f'PepGLAD site {site["site"]} has unrelaxed samples; '
+                                   f'run python -m allopep.recover_relaxation on {directory}')
         if entry['status'] == 'validated':
             for relative, expected in entry['hashes'].items():
                 path = directory / relative
@@ -255,8 +257,8 @@ class SamplingController:
                     raise ValueError(f'Saved sampling artifact changed: {path}')
         else:
             directory.mkdir(parents=True, exist_ok=True)
-            self.validate_round(designs, directory, self.prefix,
-                                self.args.peptide_chain, self.input_pdb,
+            self.validate_round(designs, directory, self.layout,
+                                self.config.peptide_chain, self.input_pdb,
                                 deadline=deadline, allow_errors=True)
         accepted, fields, rows, details = self._read_validation(directory, designs)
         if entry['status'] != 'validated':
@@ -264,8 +266,7 @@ class SamplingController:
             summary = directory / 'summary.jsonl'
             if summary.exists():
                 paths.append(summary)
-            if not entry.get('legacy'):
-                paths.append(directory / 'round.json')
+            paths.append(directory / 'round.json')
             entry['hashes'] = {str(path.relative_to(directory)): sha256(path) for path in paths}
             entry['status'] = 'validated'
             entry['failures'] = {
@@ -285,10 +286,10 @@ class SamplingController:
         directory = self._directory(entry)
         removed = removed_structures(directory, records)
         candidates = [(Path(row['path']), row['status']) for row in rows
-                      if row['status'] in ('invalid', 'error')]
+                      if row['status'] in REJECTED]
         candidates.extend((directory / 'invalid_designs' / f'{identifier}.pdb', record['status'])
                           for identifier, record in records.items()
-                          if record.get('status') in ('invalid', 'error'))
+                          if record.get('status') in REJECTED)
         for path, status in candidates:
             if path.is_file():
                 if not path.resolve().is_relative_to(directory.resolve()):
@@ -317,7 +318,7 @@ class SamplingController:
             quarantine.rmdir()
 
     def _append_reports(self, reports, *, reset=False):
-        csv_path, jsonl_path, _ = self._report_paths(self.score_dir)
+        csv_path, jsonl_path, _ = self._report_paths(self.layout.score_dir)
         fields, rows, details = reports
         mode = 'w' if reset else 'a'
         with csv_path.open(mode, newline='', encoding='utf-8') as handle:
@@ -331,21 +332,20 @@ class SamplingController:
 
     def _write_manifest(self):
         # Reconstruct on resume/completion, avoiding a growing JSON rewrite each round.
-        _, _, destination = self._report_paths(self.score_dir)
-        temporary = destination.with_name(destination.name + '.tmp')
-        with temporary.open('w', encoding='utf-8') as handle:
-            handle.write('[\n')
-            separator = ''
-            for site in self.state['sites']:
-                for entry in site['rounds']:
-                    if entry['status'] != 'validated':
-                        continue
-                    manifest = self._report_paths(self._directory(entry))[2]
-                    for row in json.loads(manifest.read_text()):
-                        handle.write(separator + json.dumps(row))
-                        separator = ',\n'
-            handle.write('\n]\n')
-        temporary.replace(destination)
+        _, _, destination = self._report_paths(self.layout.score_dir)
+        with atomic_path(destination) as temporary:
+            with temporary.open('w', encoding='utf-8') as handle:
+                handle.write('[\n')
+                separator = ''
+                for site in self.state['sites']:
+                    for entry in site['rounds']:
+                        if entry['status'] != 'validated':
+                            continue
+                        manifest = self._report_paths(self._directory(entry))[2]
+                        for row in json.loads(manifest.read_text()):
+                            handle.write(separator + json.dumps(row))
+                            separator = ',\n'
+                handle.write('\n]\n')
 
     def run(self):
         first_report = True
@@ -367,9 +367,8 @@ class SamplingController:
                     if not count:
                         continue
                     scheduled = True
-                    site_dir = (self.out_dir / f'{self.prefix}_PepGLAD_outputs'
-                                / f'{self.prefix}_allosteric_site_{site["site"]}_codesign')
-                    directory = site_dir / f'round_{len(site["rounds"]) + 1:06d}'
+                    directory = self.layout.round_dir(
+                        site['site'], len(site['rounds']) + 1)
                     if directory.exists():
                         raise FileExistsError(f'Refusing to overwrite sampling round: {directory}')
                     entry = {'directory': str(directory.relative_to(self.out_dir)),
@@ -383,9 +382,8 @@ class SamplingController:
                           f'generating {count} candidates '
                           f'({site["attempted"]}/{self.cap} attempts charged)', flush=True)
                     deadline = time.monotonic() + self.timeout
-                    pocket_file = (self.sites_dir
-                                   / f'{self.prefix}_allosteric_site_{site["site"]}.json')
-                    self.generate_round(self.args, self.input_pdb, pocket_file,
+                    pocket_file = self.layout.pocket_file(site['site'])
+                    self.generate_round(self.config, self.input_pdb, pocket_file,
                                         directory, count, deadline=deadline)
                     entry['status'] = 'generated'
                     self._save()

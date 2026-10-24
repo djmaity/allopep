@@ -30,7 +30,7 @@ root, replacing `input/structure.pdb` with your receptor PDB:
 
 ```bash
 conda activate allopep
-python allopep.py input/structure.pdb
+python -m allopep input/structure.pdb
 ```
 
 The defaults use every selected pocket, seek **10 physically valid structures
@@ -38,7 +38,7 @@ per site**, and permit **10,000 candidate attempts per site**. For a smaller
 initial run:
 
 ```bash
-python allopep.py input/structure.pdb --max_rank 1 -n 1 --max_num_peptides 32
+python -m allopep input/structure.pdb --max_rank 1 -n 1 --max_num_peptides 32
 ```
 
 This bounds the candidate count; it does not guarantee a passing structure.

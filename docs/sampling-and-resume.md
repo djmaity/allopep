@@ -64,7 +64,7 @@ Vina errors occur after selection and do not trigger replacement sampling.
 ## Resume compatibility
 
 ```bash
-python allopep.py input/structure.pdb --resume
+python -m allopep input/structure.pdb --resume
 ```
 
 Use the original generation settings, including any nondefault length or pocket
@@ -76,10 +76,21 @@ limit. The controller checks:
 - Selected site count and exact two-field pocket definitions.
 - Reserved sample ranges, round metadata, saved reports, and candidate hashes.
 
-Already-validated rounds are reused after integrity checks. Legacy flat outputs
-can be adopted, checked, and charged before new rounds are generated. An
-interrupted round keeps its full reserved budget; resume processes available
-relaxed candidates without generating replacements within that old range.
+Already-validated rounds are reused after integrity checks. An interrupted
+round keeps its full reserved budget; resume processes available relaxed
+candidates without generating replacements within that old range.
+
+Designs live only in `round_NNNNNN` subdirectories of a site directory. The
+earlier flat layout, which wrote PDBs and `summary.jsonl` directly into the
+site directory, is no longer adopted; such a directory is reported as an
+error instead.
+
+Output directories created before the pipeline became the `allopep` package
+cannot be resumed. The saved signature includes a hash of the validation
+module, which moved and changed, so resume reports differing validation
+policy. Use a fresh output prefix for those inputs. `--validate-existing`
+and `--rank-existing` never read the sampling summary and still work on
+older output directories.
 
 You may adjust `-n`, `--attempt-multiplier`, and `--max_num_peptides`. The
 effective cap must remain at least `-n` and cannot be below attempts already
@@ -95,7 +106,7 @@ Inspect the affected round from the repository root:
 
 ```bash
 conda run --no-capture-output -n PepGLAD \
-  python recover_pepglad_relaxation.py \
+  python -m allopep.recover_relaxation \
   output/structure_output/structure_PepGLAD_outputs/structure_allosteric_site_1_codesign/round_000001
 ```
 
@@ -104,7 +115,7 @@ relax pending usable designs, rerun with `--apply`:
 
 ```bash
 conda run --no-capture-output -n PepGLAD \
-  python recover_pepglad_relaxation.py \
+  python -m allopep.recover_relaxation \
   output/structure_output/structure_PepGLAD_outputs/structure_allosteric_site_1_codesign/round_000001 \
   --apply --timeout-seconds 180
 ```
@@ -125,5 +136,5 @@ same output directory simultaneously. A leftover lock file is not evidence of
 a live lock; the operating system releases the advisory lock when its holder
 exits.
 
-Implementation: `peptide_sampling.py`, `process_control.py`,
-`pepglad_outputs.py`, and `recover_pepglad_relaxation.py`.
+Implementation: `allopep/sampling.py`, `allopep/process_control.py`,
+`allopep/outputs.py`, and `allopep/recover_relaxation.py`.

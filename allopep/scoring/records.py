@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-import importlib.metadata
 from dataclasses import dataclass
 from typing import Any
 
-from .models import CombinedStructure, ScoreJob, WorkflowConfig
-from .preparation import meeko_version
-from .scoring import SCORE_TERMS, PoseMetrics, size_normalized_diagnostics
+from .models import ScoreJob, WorkflowConfig
+from .preparation import installed_version
+from .vina import SCORE_TERMS, PoseMetrics, size_normalized_diagnostics
 
 PROTOCOL_ID = "rigid_meeko_vina_residue_sum_v1"
 NORMALIZED_TERMS = (
@@ -16,9 +15,8 @@ NORMALIZED_TERMS = (
     "total_per_residue", "interaction_per_residue",
 )
 RESULT_FIELDS = (
-    "protocol_id", "id", "status", "error", "input_mode",
-    "complex_pdb", "receptor_pdb", "peptide_pdb", "complex_sha256",
-    "receptor_sha256", "peptide_sha256", "model_index", "peptide_chain",
+    "protocol_id", "id", "status", "error",
+    "complex_pdb", "complex_sha256", "model_index", "peptide_chain",
     "receptor_chains", "hydrogen_policy", "ph", "included_hetero_residues",
     "warnings", "box_source", "box_center_x", "box_center_y",
     "box_center_z", "box_size_x", "box_size_y", "box_size_z", "spacing",
@@ -28,14 +26,6 @@ RESULT_FIELDS = (
     *(f"normalized_{term}" for term in NORMALIZED_TERMS),
     "vina_version", "meeko_version",
 )
-
-
-def installed_version(distribution: str) -> str:
-    """Return an installed distribution version for result provenance."""
-    try:
-        return importlib.metadata.version(distribution)
-    except importlib.metadata.PackageNotFoundError:
-        return ""
 
 
 def hetero_policy_description(config: WorkflowConfig) -> str:
@@ -87,32 +77,21 @@ def result_record(outcome: ScoreOutcome) -> dict[str, Any]:
     """Serialize either outcome with identical fields and ordering."""
     job, config = outcome.job, outcome.config
     source = job.source
-    if isinstance(source, CombinedStructure):
-        complex_path, receptor_path, peptide_path = str(source.path), "", ""
-        peptide_chain = source.peptide_chain
-        receptor_chains = ";".join(source.receptor_chains)
-    else:
-        complex_path, receptor_path, peptide_path = (
-            "", str(source.receptor), str(source.peptide))
-        peptide_chain, receptor_chains = "", ""
     record: dict[str, Any] = {name: "" for name in RESULT_FIELDS}
     record.update({
         "protocol_id": PROTOCOL_ID,
         "id": job.job_id,
         "status": "error" if isinstance(outcome, ScoreFailure) else "ok",
-        "input_mode": job.input_mode,
-        "complex_pdb": complex_path,
-        "receptor_pdb": receptor_path,
-        "peptide_pdb": peptide_path,
+        "complex_pdb": str(source.path),
         "model_index": config.model_index,
-        "peptide_chain": peptide_chain,
-        "receptor_chains": receptor_chains,
+        "peptide_chain": source.peptide_chain,
+        "receptor_chains": ";".join(source.receptor_chains),
         "hydrogen_policy": config.hydrogen_policy,
         "ph": config.ph,
         "included_hetero_residues": hetero_policy_description(config),
         "spacing": config.spacing,
         "vina_version": installed_version("vina"),
-        "meeko_version": meeko_version() or "",
+        "meeko_version": installed_version("meeko"),
     })
     if isinstance(outcome, ScoreFailure):
         record["error"] = outcome.error
@@ -122,7 +101,7 @@ def result_record(outcome: ScoreOutcome) -> dict[str, Any]:
     peptide_metadata = outcome.peptide_metadata
     warnings = list(dict.fromkeys(
         receptor_metadata["warnings"] + peptide_metadata["warnings"]))
-    if isinstance(source, CombinedStructure) and not source.receptor_chains:
+    if not source.receptor_chains:
         warnings.insert(0, "Receptor chains were inferred as every non-peptide chain.")
     record.update({
         "receptor_chains": ";".join(receptor_metadata["chains"]),
@@ -138,11 +117,7 @@ def result_record(outcome: ScoreOutcome) -> dict[str, Any]:
         "vina_version": outcome.vina_version,
         "meeko_version": outcome.meeko_version,
     })
-    if isinstance(source, CombinedStructure):
-        record["complex_sha256"] = receptor_metadata["source_sha256"]
-    else:
-        record["receptor_sha256"] = receptor_metadata["source_sha256"]
-        record["peptide_sha256"] = peptide_metadata["source_sha256"]
+    record["complex_sha256"] = receptor_metadata["source_sha256"]
     metrics = outcome.metrics
     record.update({
         "peptide_atom_count": metrics.atom_count,

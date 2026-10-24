@@ -3,31 +3,8 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-
-
-@dataclass(frozen=True)
-class BoxSpec:
-    """An optional explicit Vina affinity-map box."""
-
-    center: tuple[float, float, float] | None = None
-    size: tuple[float, float, float] | None = None
-
-    def __post_init__(self) -> None:
-        if (self.center is None) != (self.size is None):
-            raise ValueError("Box center and size must be supplied together")
-        if self.center is not None and self.size is not None:
-            if len(self.center) != 3 or len(self.size) != 3:
-                raise ValueError("Box center and size must each contain three values")
-            if not all(math.isfinite(value) for value in (*self.center, *self.size)):
-                raise ValueError("Box center and size must be finite")
-            if any(value <= 0 for value in self.size):
-                raise ValueError("Box dimensions must be positive")
-
-    @property
-    def is_explicit(self) -> bool:
-        return self.center is not None
 
 
 @dataclass(frozen=True)
@@ -46,41 +23,26 @@ class CombinedStructure:
 
 
 @dataclass(frozen=True)
-class SeparateStructures:
-    """Receptor and peptide structures in the same coordinate frame."""
-
-    receptor: Path
-    peptide: Path
-
-
-@dataclass(frozen=True)
 class ScoreJob:
     """One independent rigid pose to score."""
 
     index: int
     job_id: str
-    source: CombinedStructure | SeparateStructures
-    box: BoxSpec = field(default_factory=BoxSpec)
+    source: CombinedStructure
 
     def __post_init__(self) -> None:
         if self.index < 0:
             raise ValueError("Job index cannot be negative")
         if not self.job_id:
             raise ValueError("Job ID cannot be empty")
-        if not isinstance(self.source, (CombinedStructure, SeparateStructures)):
-            raise TypeError("Job source must be a combined or separate structure")
-
-    @property
-    def input_mode(self) -> str:
-        return "combined" if isinstance(self.source, CombinedStructure) else "separate"
+        if not isinstance(self.source, CombinedStructure):
+            raise TypeError("Job source must be a combined structure")
 
     def validate_files(self) -> None:
         """Check existence in preflight so one missing file fails one job."""
-        paths = ((self.source.path,) if isinstance(self.source, CombinedStructure)
-                 else (self.source.receptor, self.source.peptide))
-        for path in paths:
-            if not path.is_file():
-                raise ValueError(f"Job {self.job_id!r} input does not exist: {path}")
+        if not self.source.path.is_file():
+            raise ValueError(
+                f"Job {self.job_id!r} input does not exist: {self.source.path}")
 
 
 @dataclass(frozen=True)

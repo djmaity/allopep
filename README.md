@@ -39,7 +39,7 @@ builds the rotarama cache. The `allopep` environment includes PyMOL to build
 the saved visualization session. Rerun `bash install.sh` to complete an
 interrupted installation or update existing environments.
 
-The Vina scorer is included in `vina_scoring/`. The `allopep` environment
+The Vina scorer is included in `allopep/scoring/`. The `allopep` environment
 installs Meeko 0.8.0 and Vina 1.2.7 directly; no separate scorer package or
 checkout is needed to run AlloPep.
 
@@ -50,7 +50,7 @@ pipeline on a PDB file:
 
 ```bash
 conda activate allopep
-python allopep.py input/structure.pdb
+python -m allopep input/structure.pdb
 ```
 
 `-n / --num_samples` requests **physically valid structures per selected site**
@@ -60,7 +60,7 @@ its own `--max_num_peptides` attempt cap. The cap defaults to **1,000 times
 site. Change the multiplier with `--attempt-multiplier`, a positive integer:
 
 ```bash
-python allopep.py input/structure.pdb -n 10 --attempt-multiplier 200
+python -m allopep input/structure.pdb -n 10 --attempt-multiplier 200
 ```
 
 This permits up to **200 × 10 = 2,000 attempts per site**. An explicit
@@ -69,7 +69,7 @@ per-site total. It may be higher or lower than the default, but must be at
 least `-n`. For example, set a smaller budget:
 
 ```bash
-python allopep.py input/structure.pdb -n 10 --max_num_peptides 1000
+python -m allopep input/structure.pdb -n 10 --max_num_peptides 1000
 ```
 
 Every candidate consumes an attempt, including failed coordinates, failed
@@ -113,8 +113,8 @@ writing and relaxing the complex. This is the default for new AlloPep designs.
 To reuse PepGLAD structures already generated for this input:
 
 ```bash
-python allopep.py input/structure.pdb --validate-existing
-python allopep.py input/structure.pdb --rank-existing
+python -m allopep input/structure.pdb --validate-existing
+python -m allopep input/structure.pdb --rank-existing
 ```
 
 The same commands accept `-v` and `-R`, respectively. Run each script with
@@ -141,7 +141,7 @@ were never written; resume can validate its saved relaxed candidates without
 resampling that reserved range.
 
 For a round interrupted during OpenMM relaxation, inspect its directory with
-`conda run -n PepGLAD python recover_pepglad_relaxation.py ROUND_DIR`; add
+`conda run -n PepGLAD python -m allopep.recover_relaxation ROUND_DIR`; add
 `--apply` to quarantine malformed PDBs and relax unfinished designs, then
 rerun AlloPep with `--resume`. Use the site directory for legacy flat outputs.
 Unrelaxed saved structures require this recovery before resume can continue.
@@ -171,9 +171,9 @@ members are sorted by the same identity. All pockets are used by default;
 `--max_rank N` limits design to the first N pockets. AlloPep passes only
 residue identities to PepGLAD, which uses its original geometry guidance
 without GAPS scores.
-The [GAPS default selection report](GAPS_DEFAULT_SELECTION_REPORT.md) records
-the saved optimization evidence and its limits. That search used a ≥0.4 score
-cutoff for centers and pocket members and measured only the first pocket.
+The `GAPS_DEFAULT_SELECTION_REPORT.md` report records the saved optimization
+evidence and its limits. That search used a ≥0.4 score cutoff for centers
+and pocket members and measured only the first pocket.
 It does not establish recovery for the current connected pockets or for later
 ranked pockets. The old selector tuning API has been retired; historical
 `pocket_detection` scripts that import it require a separate migration.

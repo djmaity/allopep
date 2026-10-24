@@ -28,7 +28,7 @@ revalidation. Do not describe relaxed thresholds as repaired coordinates.
 
 ## Pocket-recovery evidence
 
-The repository's `GAPS_DEFAULT_SELECTION_REPORT.md` preserves saved historical
+The `GAPS_DEFAULT_SELECTION_REPORT.md` report preserves saved historical
 selector optimization evidence. Its radius-limited pockets, score cutoff,
 relative-accessibility settings, and neighborhood blending differ from the
 current connected-pocket selector.

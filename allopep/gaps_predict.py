@@ -17,6 +17,8 @@ from GAPS.src.structure import (concatenate_chains, encode_bfactor,
                                 split_by_chain)
 from GAPS.src.structure_io import save_pdb
 
+from .layout import REPO_ROOT
+
 
 def score_records(structure, probabilities):
     """Pair raw residue probabilities with PDB identities before B-factor export."""
@@ -61,7 +63,7 @@ def run_prediction(pdb_filepath, out_dir, pytorch_device='cuda'):
     device = pt.device(pytorch_device)
     model = Model(config_model)
     model.load_state_dict(pt.load(
-        Path(__file__).with_name('GAPS') / 'checkpoints' / 'model.pt',
+        REPO_ROOT / 'GAPS' / 'checkpoints' / 'model.pt',
         map_location=device, weights_only=True,
     ))
     model = model.eval().to(device)

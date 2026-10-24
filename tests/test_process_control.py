@@ -9,7 +9,7 @@ from pathlib import Path
 
 import psutil
 
-from process_control import run_logged
+from allopep.process_control import run_logged
 
 
 class ProcessControlTests(unittest.TestCase):

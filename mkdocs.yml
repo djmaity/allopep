@@ -5,6 +5,7 @@ repo_name: djmaity/allopep
 edit_uri: ""
 docs_dir: docs
 site_dir: site
+use_directory_urls: false
 strict: true
 
 theme:

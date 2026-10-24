@@ -9,14 +9,14 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from run_gaps import (ScoredResidue, load_scored_residues, run_gaps,
+from allopep.gaps import (ScoredResidue, load_scored_residues, run_gaps,
                       select_contexts, select_guidance_contexts)
 
 
 class GapsGuidanceTests(unittest.TestCase):
     def test_prediction_uses_gaps_environment(self):
         pdb = Path(__file__).parent / 'fixtures' / 'sample_GAPS_output.pdb'
-        with patch('run_gaps.subprocess.run') as subprocess_run:
+        with patch('allopep.gaps.subprocess.run') as subprocess_run:
             run_gaps(pdb, out_dir='output/test', pytorch_device='cpu')
         command = subprocess_run.call_args.args[0]
         self.assertEqual(command[:6], [
@@ -49,7 +49,7 @@ class GapsGuidanceTests(unittest.TestCase):
             scores = Path(directory) / 'target_GAPS_scores.json'
             pdb.write_text('\n'.join(lines) + '\n')
             scores.write_text(json.dumps({'schema_version': 1, 'residues': records}))
-            with patch('run_gaps.freesasa.calcBioPDB', return_value=(mock_sasa, {})):
+            with patch('allopep.gaps.freesasa.calcBioPDB', return_value=(mock_sasa, {})):
                 scored = load_scored_residues(pdb, scores)
                 self.assertEqual([r.key for r in scored], positions)
                 self.assertEqual(scored[0].score, 0.873241)
@@ -170,7 +170,7 @@ class GapsGuidanceTests(unittest.TestCase):
                           (site * 20.0 + offset * 2.0, 0.0, 0.0), 0.5)
             for site in range(4) for offset in range(2)
         ]
-        with patch('run_gaps.load_scored_residues', return_value=residues):
+        with patch('allopep.gaps.load_scored_residues', return_value=residues):
             default = select_guidance_contexts('unused', 'unused')
             explicit_all = select_guidance_contexts('unused', 'unused', max_rank='all')
             top = select_guidance_contexts('unused', 'unused', max_rank=2)

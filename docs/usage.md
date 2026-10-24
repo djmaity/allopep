@@ -9,7 +9,7 @@ peptide removal.
 
 ```bash
 conda activate allopep
-python allopep.py input/structure.pdb \
+python -m allopep input/structure.pdb \
   --max_rank 1 \
   --length_min 8 --length_max 13 \
   --num_samples 5 --max_num_peptides 500
@@ -30,7 +30,7 @@ Results use the input filename stem: `structure.pdb` maps to
 ## Command-line reference
 
 ```text
-python allopep.py PDB_FILE [OPTIONS]
+python -m allopep PDB_FILE [OPTIONS]
 ```
 
 | Argument | Default | Meaning |
@@ -75,7 +75,7 @@ for adaptive rounds, reservation accounting, and selected structures.
 Use the same input and generation settings:
 
 ```bash
-python allopep.py input/structure.pdb --max_rank 1 \
+python -m allopep input/structure.pdb --max_rank 1 \
   --length_min 8 --length_max 13 -n 5 --max_num_peptides 1000 --resume
 ```
 
@@ -87,8 +87,8 @@ settings, or altered saved artifacts cause resume to fail. See the
 ## Recheck or rerank saved structures
 
 ```bash
-python allopep.py input/structure.pdb --validate-existing
-python allopep.py input/structure.pdb --rank-existing
+python -m allopep input/structure.pdb --validate-existing
+python -m allopep input/structure.pdb --rank-existing
 ```
 
 These modes discover available structures in both legacy flat outputs and round
@@ -110,4 +110,5 @@ A partial Vina scoring failure is recorded in the results CSV and does not
 cause replacement sampling. Exit status alone does not give the number of
 valid structures or successful scores.
 
-Implementation: `allopep.py::parse_args()` and `allopep.py::main()`.
+Implementation: `allopep/cli.py::parse_args()`,
+`allopep/cli.py::sampling_config()`, and `allopep/cli.py::main()`.

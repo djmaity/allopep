@@ -7,7 +7,10 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from allopep import _pymol_commands, run_pepglad, write_allosteric_site_visualization
+from allopep.cli import run_pepglad
+from allopep.layout import OutputLayout
+from allopep.pymol_session import (_pymol_commands,
+                                   write_allosteric_site_visualization)
 
 
 class AllostericVisualizationTests(unittest.TestCase):
@@ -35,6 +38,7 @@ class AllostericVisualizationTests(unittest.TestCase):
         (self.out / 'target_GAPS_output.pdb').write_text('unused renumbered export\n')
         self.sites = self.out / 'target_allosteric_sites'
         self.sites.mkdir()
+        self.layout = OutputLayout.at(self.out, 'target')
 
     def pocket(self, site, residues):
         (self.sites / f'target_allosteric_site_{site}.json').write_text(
@@ -52,8 +56,8 @@ class AllostericVisualizationTests(unittest.TestCase):
             (kwargs['cwd'] / 'session.pse').write_bytes(b'new session')
             return SimpleNamespace(returncode=0, stdout='', stderr='')
 
-        with patch('allopep.subprocess.run', side_effect=build):
-            session = write_allosteric_site_visualization(self.out, 'target')
+        with patch('allopep.pymol_session.subprocess.run', side_effect=build):
+            session = write_allosteric_site_visualization(self.layout)
         self.assertEqual(session, self.out / 'target_allosteric_site.pse')
         self.assertEqual(session.read_bytes(), b'new session')
         content = session.with_suffix('.pml').read_text()
@@ -82,9 +86,9 @@ class AllostericVisualizationTests(unittest.TestCase):
             return SimpleNamespace(returncode=0, stdout='Error: invalid selection',
                                    stderr='')
 
-        with patch('allopep.subprocess.run', side_effect=fail):
+        with patch('allopep.pymol_session.subprocess.run', side_effect=fail):
             with self.assertRaisesRegex(RuntimeError, 'invalid selection'):
-                write_allosteric_site_visualization(self.out, 'target')
+                write_allosteric_site_visualization(self.layout)
         self.assertEqual(session.read_bytes(), b'previous session')
         self.assertEqual(script.read_text(), 'previous script')
         self.assertFalse(list(self.out.glob('.allopep-pymol-*')))
@@ -92,7 +96,7 @@ class AllostericVisualizationTests(unittest.TestCase):
     def test_full_precision_scores_and_sites_use_original_residue_ids(self):
         original = self.pdb.read_text()
         self.pocket(1, [['A', [10, ' ']], ['A', [11, 'A']], ['B', [20, ' ']]])
-        content = '\n'.join(_pymol_commands([], self.out, 'target', include_all_sites=True))
+        content = '\n'.join(_pymol_commands([], self.layout, include_all_sites=True))
         self.assertIn(f'load {json.dumps(str(self.pdb.resolve()))}, target', content)
         self.assertNotIn('target_GAPS_output.pdb', content)
         self.assertIn('alter target and polymer.protein and chain "A" and resi 10, '
@@ -109,17 +113,17 @@ class AllostericVisualizationTests(unittest.TestCase):
         self.records[1]['ca'][0] += 1.0
         self.scores.write_text(json.dumps({'schema_version': 1, 'residues': self.records}))
         with self.assertRaisesRegex(ValueError, 'coordinates differ from original PDB'):
-            _pymol_commands([], self.out, 'target', include_all_sites=True)
+            _pymol_commands([], self.layout, include_all_sites=True)
 
     def test_missing_original_pdb_does_not_use_renumbered_export(self):
         self.pdb.unlink()
         with self.assertRaisesRegex(FileNotFoundError, 'Original receptor structure'):
-            write_allosteric_site_visualization(self.out, 'target')
+            write_allosteric_site_visualization(self.layout)
 
     def test_missing_scores_do_not_use_original_temperature_factors(self):
         self.scores.unlink()
         with self.assertRaises(FileNotFoundError):
-            write_allosteric_site_visualization(self.out, 'target')
+            write_allosteric_site_visualization(self.layout)
 
     def test_native_pymol_session_preserves_ids_scores_and_unscored_color(self):
         import pymol2
@@ -129,7 +133,7 @@ class AllostericVisualizationTests(unittest.TestCase):
             'ATOM      6  CA  ALA C  99      24.000   0.000   0.000  1.00 25.00           C  \nEND\n')
         self.pdb.write_text(original)
         self.pocket(1, [['A', [11, 'A']], ['B', [20, ' ']]])
-        session = write_allosteric_site_visualization(self.out, 'target')
+        session = write_allosteric_site_visualization(self.layout)
         with pymol2.PyMOL() as pymol:
             cmd = pymol.cmd
             cmd.load(str(session))
@@ -148,9 +152,9 @@ class AllostericVisualizationTests(unittest.TestCase):
         self.assertEqual(self.pdb.read_text(), original)
 
     def test_missing_sites_are_reported_before_launching_pymol(self):
-        with patch('allopep.subprocess.run') as launch:
+        with patch('allopep.pymol_session.subprocess.run') as launch:
             with self.assertRaisesRegex(FileNotFoundError, 'No allosteric site'):
-                write_allosteric_site_visualization(self.out, 'target')
+                write_allosteric_site_visualization(self.layout)
         launch.assert_not_called()
 
     def test_site_view_is_created_before_sampling_starts(self):
@@ -162,17 +166,17 @@ class AllostericVisualizationTests(unittest.TestCase):
             events.append('sampling')
             return result
 
-        def create_view(out, prefix):
-            session = out / f'{prefix}_allosteric_site.pse'
+        def create_view(layout):
+            session = layout.root / f'{layout.prefix}_allosteric_site.pse'
             session.touch()
             events.append('visualization')
             return session
 
-        with patch('allopep.SamplingController') as controller, \
-             patch('allopep.write_allosteric_site_visualization',
+        with patch('allopep.cli.SamplingController') as controller, \
+             patch('allopep.cli.write_allosteric_site_visualization',
                    side_effect=create_view):
             controller.return_value.run.side_effect = start_sampling
-            self.assertIs(run_pepglad(None, 'target.pdb', self.out, 'target', []),
+            self.assertIs(run_pepglad(None, 'target.pdb', self.layout, []),
                           result)
         self.assertEqual(events, ['visualization', 'sampling'])
 

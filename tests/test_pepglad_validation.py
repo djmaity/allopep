@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from pepglad_validation import (FIELDS, validate_manifest, validation_reasons,
+from allopep.validation import (FIELDS, validate_manifest, validation_reasons,
                                 write_reports)
 
 
@@ -24,7 +24,7 @@ class ValidationPolicyTests(unittest.TestCase):
     def test_parallel_validation_runs_in_multiple_processes_and_keeps_order(self):
         entries = [{'path': f'sample_{index}.pdb', 'site': 1, 'sample': index,
                     'fail': index == 2} for index in range(4)]
-        with patch('pepglad_validation.validate_structure', _probe_validation):
+        with patch('allopep.validation.validate_structure', _probe_validation):
             reports = list(validate_manifest(entries, workers=2))
         rows = [row for row, _ in reports]
         self.assertEqual([row['path'] for row in rows],

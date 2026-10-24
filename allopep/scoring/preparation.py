@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import importlib.metadata
 import math
 import shutil
@@ -14,6 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from ..fileio import sha256
 from .selection import StructureSelector, _is_hydrogen
 
 
@@ -23,15 +23,6 @@ class PreparedComponent:
 
     pdbqt: Path
     metadata: dict[str, Any]
-
-
-def sha256_file(filename: str | Path) -> str:
-    """Return a streaming SHA-256 digest for an input structure."""
-    digest = hashlib.sha256()
-    with open(filename, "rb") as handle:
-        for block in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
 
 
 def find_meeko_receptor_preparer() -> Path:
@@ -48,12 +39,12 @@ def find_meeko_receptor_preparer() -> Path:
         "Meeko executable 'mk_prepare_receptor.py' was not found")
 
 
-def meeko_version() -> str | None:
-    """Return the installed Meeko distribution version."""
+def installed_version(distribution: str) -> str:
+    """Return an installed distribution version for result provenance."""
     try:
-        return importlib.metadata.version("meeko")
+        return importlib.metadata.version(distribution)
     except importlib.metadata.PackageNotFoundError:
-        return None
+        return ""
 
 
 class MeekoPreparer:
@@ -64,8 +55,6 @@ class MeekoPreparer:
         include_all_hetero: bool = False,
         ph: float = 7.4, hydrogen_policy: str = "keep",
         meeko_templates: Path | None = None,) -> None:
-        if not math.isfinite(ph):
-            raise ValueError("pH must be finite")
         self.selector = StructureSelector(
             model_index=model_index,
             keep_hetero_residues=keep_hetero_residues,
@@ -83,27 +72,9 @@ class MeekoPreparer:
             raise RuntimeError("Meeko is required for PDBQT preparation") from exc
         templates = ResidueChemTemplates.create_from_defaults()
         if meeko_templates is not None:
-            if not meeko_templates.is_file():
-                raise ValueError(
-                    f"Meeko template file does not exist: {meeko_templates}")
             templates.add_json_file(str(meeko_templates))
         self._supported_residue_names = (
             set(templates.residue_templates) | set(templates.ambiguous))
-
-    def available_chains(self, source: Path) -> tuple[str, ...]:
-        return self.selector.available_chains(source)
-
-    def selected_coordinates(self, source: Path,
-        chain_ids: Sequence[str] | None = None, *,
-        as_ligand: bool = False,) -> list[tuple[float, float, float]]:
-        return self.selector.selected_coordinates(
-            source, chain_ids, as_ligand=as_ligand)
-
-    def _write_selected_structure(self, source: Path, destination: Path,
-        chain_ids: Sequence[str] | None, *, as_ligand: bool
-    ) -> tuple[tuple[str, ...], list[str], list[str]]:
-        return self.selector._write_selected_structure(
-            source, destination, chain_ids, as_ligand=as_ligand)
 
     def _selected_atom_metrics(self, source: Path) -> tuple[
         int, list[tuple[float, float, float]], Counter[tuple[str, int]],]:
@@ -260,7 +231,7 @@ class MeekoPreparer:
         selected_structure = output_prefix.with_suffix(".pdb")
         pdbqt = output_prefix.with_suffix(".pdbqt")
         selected_chains, hetero_present, excluded_hetero = (
-            self._write_selected_structure(
+            self.selector._write_selected_structure(
                 source, selected_structure, chain_ids, as_ligand=as_ligand,))
         (
             input_hydrogens, input_heavy_coordinates,
@@ -278,7 +249,7 @@ class MeekoPreparer:
                 "Excluded HETATM residue names: " + ", ".join(excluded_hetero))
         return PreparedComponent(
             pdbqt=pdbqt, metadata={"source_pdb": str(source),
-                "source_sha256": sha256_file(source),
+                "source_sha256": sha256(source),
                 "model_index": self.model_index,
                 "chains": list(selected_chains),
                 "hetero_residues_present": hetero_present,
@@ -296,7 +267,3 @@ class MeekoPreparer:
                 "preparation_tool": "meeko", "meeko_templates": (
                     str(self.meeko_templates) if self.meeko_templates
                     else "built_in"), "warnings": warnings,},)
-
-
-class PdbPreparer(MeekoPreparer):
-    """Stable facade used by downstream GNINA preparation code."""

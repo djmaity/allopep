@@ -20,12 +20,12 @@ seeks five physically valid structures with at most 500 candidate attempts.
 Results use the input filename stem: `structure.pdb` maps to
 `output/structure_output/`.
 
-!!! note "Peptide length uses an exclusive upper bound"
-
-    PepGLAD samples `length_min <= length < length_max`. The defaults `5` and
-    `10` therefore generate lengths **5–9**. To request only length eight, use
-    `--length_min 8 --length_max 9`. Keep the upper bound strictly greater than
-    the lower bound.
+> **Peptide length uses an exclusive upper bound**
+>
+> PepGLAD samples `length_min <= length < length_max`. The defaults `5` and
+> `10` therefore generate lengths **5–9**. To request only length eight, use
+> `--length_min 8 --length_max 9`. Keep the upper bound strictly greater than
+> the lower bound.
 
 ## Command-line reference
 
@@ -39,9 +39,10 @@ python -m allopep PDB_FILE [OPTIONS]
 | `-r`, `--max_rank` | `all` | Use every ranked GAPS pocket, or the first positive integer number of pockets. |
 | `-l`, `--length_min` | `5` | Minimum generated peptide length, inclusive. |
 | `-L`, `--length_max` | `10` | Maximum length, exclusive in PepGLAD. |
-| `-n`, `--num_samples` | `10` | Target number of physically valid structures **per site**. |
-| `--attempt-multiplier` | `1000` | Positive integer multiplied by `-n` to calculate each site's attempt cap. |
-| `--max_num_peptides` | Calculated | Absolute per-site attempt cap; overrides the multiplier and must be at least `-n`. |
+| `-n`, `--num_samples` | `10` | Target number of physically valid complexes across all selected sites. |
+| `--peptides-per-site` | Off | Apply the target and attempt cap separately to each site. |
+| `--attempt-multiplier` | `1000` | Positive integer multiplied by `-n` to calculate the attempt cap. |
+| `--max_num_peptides` | Calculated | Absolute attempt cap; overrides the multiplier and must be at least `-n`. |
 | `--round-timeout-seconds` | `3600` | Shared deadline for one round's generation, relaxation, and validation. |
 | `-c`, `--peptide-chain` | From summary | Known peptide chain ID; must agree with PepGLAD's summary. One alphanumeric character. |
 | `-v`, `--validate-existing` | Off | Validate saved available complexes without generation or Vina scoring. |
@@ -57,13 +58,17 @@ The target, multiplier, cap, and round timeout must be positive integers.
 Without an explicit cap:
 
 ```text
-per-site attempt cap = num_samples × attempt_multiplier
+attempt cap = num_samples × attempt_multiplier
 ```
 
-For example, `-n 10 --attempt-multiplier 200` permits 2,000 candidates at each
-selected site. `-n 10 --max_num_peptides 1000` instead sets a cap of 1,000.
-The budget applies separately to each site, so designing more pockets can
-increase total work substantially.
+For example, `-n 10 --attempt-multiplier 200` permits 2,000 candidates overall.
+`-n 10 --max_num_peptides 1000` instead sets a cap of 1,000. Add
+`--peptides-per-site` to apply the cap and requested valid count separately
+to each site:
+
+```bash
+python -m allopep input/structure.pdb -n 10 --peptides-per-site
+```
 
 Every candidate consumes an attempt, including invalid coordinates, relaxation
 failures, and rejected structures. Different structures with the same peptide
@@ -81,7 +86,8 @@ python -m allopep input/structure.pdb --max_rank 1 \
 
 You may change the valid-structure target or attempt budget, but the cap cannot
 be less than attempts already charged. Changed pockets, incompatible generation
-settings, or altered saved artifacts cause resume to fail. See the
+settings, or altered saved artifacts cause resume to fail. The
+`--peptides-per-site` setting must also match. See the
 [compatibility rules](sampling-and-resume.md#resume-compatibility).
 
 ## Recheck or rerank saved structures
@@ -91,19 +97,19 @@ python -m allopep input/structure.pdb --validate-existing
 python -m allopep input/structure.pdb --rank-existing
 ```
 
-These modes discover available structures in both legacy flat outputs and round
-directories. They check every available candidate, including retained valid
-extras, rather than applying `-n` as a new selection limit. They do not generate
-replacement samples. Rejected structures already deleted by the sampler remain
-documented in round reports; their coordinates cannot be rechecked. See
+These modes discover available structures in round directories and check every
+available candidate, including rejected structures and retained valid extras.
+They then apply `-n` and `--peptides-per-site` to the copied complexes and
+peptide CSV. `--rank-existing` scores only that selection. They do not generate
+replacement samples. Source coordinates remain available. See
 [report retention](outputs.md#report-and-structure-retention).
 
 ## Exit status
 
 | Status | Meaning |
 | --- | --- |
-| `0` | Normal completion. For sampling, every site reached its valid-structure target. Validation-only can finish normally with zero passing structures; inspect the reports. |
-| `2` | At least one site exhausted its attempt cap before reaching the target. Partial valid results are retained and ranked when available. |
+| `0` | The requested valid-complex count was reached, overall or at each site with `--peptides-per-site`. |
+| `2` | The requested count was not reached. Partial valid results are retained and ranked when requested. |
 | `1` | Operational failure, such as a timeout, incompatible resume state, failed dependency, or all Vina jobs failing. |
 
 A partial Vina scoring failure is recorded in the results CSV and does not

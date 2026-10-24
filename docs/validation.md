@@ -134,6 +134,10 @@ sampling within the budget. The top-level existing-output modes treat a
 validation error as an operational failure. A missing validation dependency
 can prevent the validation subprocess from running at all.
 
+Validation checks independent complexes in parallel. The worker count is
+chosen automatically from available CPUs, memory, and the number of complexes;
+report rows retain the manifest order.
+
 ## Inspect the reports
 
 For an input named `structure.pdb`, cumulative reports are under
@@ -170,7 +174,8 @@ print("Rejections:", Counter(
 ```
 
 See [report retention](outputs.md#report-and-structure-retention) before
-rechecking existing outputs: rejected coordinates may already have been deleted.
+rechecking existing outputs: source coordinates and round reports are retained,
+while existing-output commands refresh the cumulative validation reports.
 
 ## Validation, repair, and scientific limits
 

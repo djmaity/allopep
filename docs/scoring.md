@@ -57,10 +57,12 @@ conda activate allopep
 python -m allopep input/structure.pdb --rank-existing
 ```
 
-This validates available saved candidates and scores those passing the gate.
-It can include valid extras retained from the final sampling round. It
-refreshes cumulative validation and scoring reports without generating
-peptides. Archive reports first when preserving a particular analysis.
+This validates all available saved candidates, then applies `-n` and
+`--peptides-per-site` to select which passing complexes to score. The selection
+can include valid extras retained from the final sampling round. It refreshes
+cumulative validation and scoring reports, the selected-complex copies, and
+the peptide CSV without generating peptides. Archive reports first when
+preserving a particular analysis.
 Earlier Rosetta reports remain historical artifacts; compatible saved sampling
 rounds can be resumed with the new scorer.
 

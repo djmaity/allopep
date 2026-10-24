@@ -13,15 +13,15 @@ rank the accepted structures.
 | 2. Select | Accessible, high-scoring residues form connected pockets. | Ranked pocket definitions. |
 | 3. Generate | PepGLAD samples peptides, idealizes geometry, and applies OpenMM relaxation. | Candidate complexes and generation records. |
 | 4. Validate | Each usable complex must pass all 16 physical-validity criteria. | Accepted structures and rejection details. |
-| 5. Continue | Each site receives more samples until its valid-structure target or attempt cap is reached. | A resumable sampling summary. |
+| 5. Continue | Sites receive more samples until the overall target or shared cap is reached, or separately per site with `--peptides-per-site`. | A resumable sampling summary. |
 | 6. Rank | Vina scores the selected valid structures. | A CSV ordered by increasing `score_total`. |
 
-!!! note "What a result establishes"
-
-    A passing structure satisfies the implemented physical checks. A favorable
-    Vina score is a ranking signal. Experimental binding, allosteric activity,
-    and dynamic stability require separate evidence. See
-    [Scientific interpretation](scientific-scope.md).
+> **What a result establishes**
+>
+> A passing structure satisfies the implemented physical checks. A favorable
+> Vina score is a ranking signal. Experimental binding, allosteric activity,
+> and dynamic stability require separate evidence. See
+> [Scientific interpretation](scientific-scope.md).
 
 ## Start a run
 
@@ -33,9 +33,10 @@ conda activate allopep
 python -m allopep input/structure.pdb
 ```
 
-The defaults use every selected pocket, seek **10 physically valid structures
-per site**, and permit **10,000 candidate attempts per site**. For a smaller
-initial run:
+The defaults use every selected pocket, seek **10 physically valid complexes
+across all sites**, and permit **10,000 candidate attempts overall**. Add
+`--peptides-per-site` to apply both the target and budget separately to each
+site. For a smaller initial run:
 
 ```bash
 python -m allopep input/structure.pdb --max_rank 1 -n 1 --max_num_peptides 32

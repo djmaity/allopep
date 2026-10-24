@@ -44,7 +44,7 @@ not describe the current [selector](pocket-selection.md).
 | `Saved sampling artifact changed` | A cached candidate, report, summary, or round record no longer matches its saved hash. |
 | Already-charged attempts exceed the cap | Increase the cap to at least the charged count; resume does not reset attempts. |
 
-Do not edit a checkpoint or deletion journal to force compatibility. Use
+Do not edit a checkpoint to force compatibility. Use
 [resume checks](sampling-and-resume.md#resume-compatibility) to identify the
 actual difference.
 
@@ -67,17 +67,19 @@ explains every threshold. Reasons overlap, so summing their counts overstates
 the number of failed structures.
 
 Check `valid_count`, `attempted`, and `completion_reason` at each site. A
-sampling exit status of `2` means the budget was exhausted; increasing the cap
-allows more sampling but does not guarantee valid output. A positive validation
+sampling exit status of `2` means the requested count was not reached;
+increasing the cap allows more sampling but does not guarantee valid output.
+A positive validation
 result is required before scoring, regardless of interface contacts or an
 otherwise favorable energy.
 
 ## Missing rejected PDBs
 
-The sampler intentionally removes rejected coordinates after saving their
-validation records and hashes. Check the round's `removed_structures.json` and
-validation reports. This is distinct from a missing valid candidate, which
-breaks resume integrity. See [report retention](outputs.md#report-and-structure-retention).
+The sampler preserves written rejected coordinates in their round directories
+or `invalid_designs/`. Candidates rejected during generation can have no usable
+PDB; inspect `summary.jsonl` and error records. Missing or changed saved
+candidates break resume integrity. See
+[report retention](outputs.md#report-and-structure-retention).
 
 ## Round timeout or apparent stall
 

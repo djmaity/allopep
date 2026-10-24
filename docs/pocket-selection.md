@@ -81,10 +81,14 @@ not evidence that a two-residue pocket yields high-quality designs.
 The `GAPS_DEFAULT_SELECTION_REPORT.md` report records historical
 optimization evidence. Its radius-limited, score-blended selector and the
 earlier connected-pocket threshold experiments differ from the current rules.
-Those results do not measure recovery for the current algorithm.
+The radius-limited search used a **≥0.4 score cutoff** for centers and pocket
+members and evaluated only the first pocket. Those results do not measure
+recovery for the current algorithm or later ranked pockets.
 
 The benchmark workspace is `~/pocket_detection`; consult its own README for
-cohorts and saved artifacts. Historical scripts importing the retired
+cohorts, commands, evaluation methods, and saved full and pilot artifacts. The
+benchmark compares the first GAPS pocket with receptor residues contacting
+each bound peptide chain. Historical scripts importing the retired
 `GuidanceSelection` API require migration before use with this checkout.
 
 Resume requires the same selected site count and exact saved pocket JSON.

@@ -33,6 +33,11 @@ The installer:
 5. Installs `ray[default]==2.51.2` in `PepGLAD` and rebuilds the CCTBX rotarama
    cache in `allopep`.
 
+`environment.yml` installs AlloPep itself in editable mode, which provides the
+`allopep` command in any directory. Keep this install editable, and keep the
+repository in place: AlloPep finds `GAPS/` and `PepGLAD/` beside its source
+files, so a regular `pip install .` would not find them.
+
 | Component | Pinned revision or artifact |
 | --- | --- |
 | GAPS | `c67cba6ca3ef45470bee8bbb2f0c832680c18044` |
@@ -62,7 +67,8 @@ Meeko 0.8.0 and Vina 1.2.7 directly. A design or reranking run checks these
 dependencies and Meeko's receptor-preparation executable before processing
 structures. `--validate-existing` skips scoring dependency checks.
 
-An existing installation can update just the main environment:
+An existing installation can update just the main environment, which also adds
+the `allopep` command:
 
 ```bash
 conda env update -n allopep -f environment.yml
@@ -70,10 +76,10 @@ conda env update -n allopep -f environment.yml
 
 ## Check the installation
 
-From the repository root:
+From any directory:
 
 ```bash
-conda run --no-capture-output -n allopep python -m allopep --help
+conda run --no-capture-output -n allopep allopep --help
 conda run --no-capture-output -n allopep python -c \
   "import ost, mmtbx, freesasa, pymol; print('Validation and visualization imports OK')"
 conda run --no-capture-output -n allopep python -c \

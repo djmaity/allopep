@@ -319,6 +319,37 @@ class VinaRankingTests(unittest.TestCase):
             main(['target.pdb', '--validate-existing'])
         check.assert_not_called()
 
+    def test_output_dir_sets_the_parent_of_the_output_folder(self):
+        for options, expected in (
+            ([], Path('output/target_output')),
+            (['-o', '/results'], Path('/results/target_output')),
+        ):
+            with self.subTest(options=options), \
+                 patch('allopep.cli.check_vina_dependencies'), \
+                 patch('allopep.cli.require_resume'), \
+                 patch('allopep.cli.prepare_input_pdb',
+                       side_effect=FileNotFoundError) as prepare, \
+                 self.assertRaises(FileNotFoundError):
+                try:
+                    main(['/inputs/target.pdb', *options])
+                finally:
+                    self.assertEqual(prepare.call_args.args[1].root, expected)
+
+    def test_saved_result_modes_require_results_where_they_look(self):
+        """A forgotten -o must stop the run, not start a fresh one."""
+        with tempfile.TemporaryDirectory() as empty:
+            for option in ('--resume', '--validate-existing',
+                           '--rank-existing'):
+                with self.subTest(option=option), \
+                     patch('allopep.cli.check_vina_dependencies'), \
+                     patch('allopep.cli.gaps.run_gaps') as run_gaps, \
+                     self.assertRaisesRegex(FileNotFoundError,
+                                            'same -o/--output-dir'):
+                    try:
+                        main(['target.pdb', '-o', empty, option])
+                    finally:
+                        run_gaps.assert_not_called()
+
     def test_max_rank_cli_defaults_to_all_and_accepts_a_limit(self):
         self.assertEqual(parse_args(['target.pdb']).max_rank, 'all')
         self.assertEqual(parse_args(['target.pdb', '--max_rank', 'all']).max_rank, 'all')

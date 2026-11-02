@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "allopep"
+version = "0.1.0"
+description = "Pipeline for allosteric peptide design"
+readme = "README.md"
+requires-python = ">=3.12"
+# Dependencies are managed by Conda in environment.yml.
+dependencies = []
+
+[project.scripts]
+allopep = "allopep.__main__:run"
+
+# GAPS/, PepGLAD/, tests/ and docs/ sit beside the package, so automatic
+# discovery must be limited to the package itself.
+[tool.setuptools.packages.find]
+include = ["allopep*"]

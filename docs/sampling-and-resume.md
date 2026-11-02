@@ -66,11 +66,13 @@ Vina errors occur after selection and do not trigger replacement sampling.
 ## Resume compatibility
 
 ```bash
-python -m allopep input/structure.pdb --resume
+allopep input/structure.pdb --resume
 ```
 
 Use the original generation settings, including any nondefault length or pocket
-limit. The controller checks:
+limit, and the original `-o`/working directory. `--resume` requires saved
+results in the output directory and fails if it finds none. The controller
+checks:
 
 - Input PDB SHA-256.
 - Peptide length bounds and peptide-chain override.
@@ -101,7 +103,9 @@ See [report and structure retention](outputs.md#report-and-structure-retention).
 
 ## Interrupted OpenMM relaxation
 
-Inspect the affected round from the repository root:
+Inspect the affected round from the repository root. AlloPep is not installed in
+the `PepGLAD` environment, so this command must run from there. If the results
+are in another directory, give the round's full path:
 
 ```bash
 conda run --no-capture-output -n PepGLAD \

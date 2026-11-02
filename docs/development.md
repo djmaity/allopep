@@ -11,11 +11,11 @@ Meeko's receptor preparer available to these commands.
 
 ## Source map
 
-The pipeline is the `allopep` package, run as `python -m allopep`.
+The pipeline is the `allopep` package, run as `allopep` or `python -m allopep`.
 
 | File or directory | Responsibility |
 | --- | --- |
-| `allopep/__main__.py` | Entry point for `python -m allopep`. |
+| `allopep/__main__.py` | Entry point for `allopep` and `python -m allopep`. |
 | `allopep/cli.py` | Command line, stage orchestration, and validation invocation. |
 | `allopep/layout.py` | Repository anchors and every output path, derived in one place. |
 | `allopep/fileio.py` | Atomic file replacement and content hashing. |
@@ -32,6 +32,7 @@ The pipeline is the `allopep` package, run as `python -m allopep`.
 | `allopep/recover_relaxation.py` | Inspection and optional recovery of interrupted relaxation. |
 | `allopep/scoring/` | Rigid-pose Meeko/Vina scorer, also usable on its own as `python -m allopep.scoring`. |
 | `install.sh`, `environment.yml` | Pinned dependency setup and the main environment declaration. |
+| `pyproject.toml` | Package metadata and the `allopep` command; dependencies stay in `environment.yml`. |
 | `patches/` | Changes applied to the pinned external checkouts. |
 | `tests/` | Focused regression tests and fixtures. |
 | `docs/`, `mkdocs.yml` | This documentation site. |

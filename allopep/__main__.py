@@ -1,12 +1,18 @@
-"""Entry point for ``python -m allopep``."""
+"""Entry point for the ``allopep`` command and ``python -m allopep``."""
 
 import sys
 
 from .cli import main
 
-if __name__ == '__main__':
+
+def run():
+    """Run the pipeline and return its exit code, reporting any failure."""
     try:
-        sys.exit(main())
+        return main()
     except Exception as exc:
         print(f'AlloPep failed: {exc}', file=sys.stderr)
-        sys.exit(1)
+        return 1
+
+
+if __name__ == '__main__':
+    sys.exit(run())

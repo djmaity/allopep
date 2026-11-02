@@ -7,7 +7,7 @@ import shutil
 from pathlib import Path
 
 from . import gaps
-from .layout import REPO_ROOT, OutputLayout
+from .layout import OUTPUT_BASE, REPO_ROOT, OutputLayout
 from .outputs import load_round_outputs, site_rounds
 from .peptide_exports import export_peptides
 from .process_control import run_logged
@@ -33,10 +33,14 @@ def _max_rank(value):
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(
-        prog='python -m allopep',
+        prog='allopep',
         description='Pipeline for allosteric peptide design',
     )
     parser.add_argument('pdb_file')
+    parser.add_argument('-o', '--output-dir', default=OUTPUT_BASE, type=Path,
+                        help='Parent folder for results, which are written '
+                        'to OUTPUT_DIR/<input-stem>_output/ '
+                        '(default: ./output)')
     parser.add_argument('-r', '--max_rank', default='all', type=_max_rank,
                         help='Number of ranked GAPS pockets to design (default: "all"; or a positive integer)')
     parser.add_argument('-l', '--length_min', default=5, type=int,
@@ -69,6 +73,32 @@ def parse_args(argv=None):
     existing.add_argument('--resume', action='store_true',
                           help='Resume sampling using saved rounds and cumulative attempt budgets')
     return parser.parse_args(argv)
+
+
+def _reuse_option(args):
+    """Name the option that asked for saved results, for messages."""
+    if args.validate_existing:
+        return '--validate-existing'
+    if args.rank_existing:
+        return '--rank-existing'
+    return '--resume'
+
+
+def require_existing_output(layout, option):
+    """Refuse the saved-result modes when that output is not present.
+
+    The output directory comes from ``-o`` and the working directory,
+    so a mismatch with the original run would otherwise silently start
+    a fresh run under ``--resume``.
+    """
+    designs = layout.designs_dir
+    if (layout.sampling_summary.is_file()
+            or (designs.is_dir() and any(designs.iterdir()))):
+        return
+    raise FileNotFoundError(
+        f'{option} found no previous AlloPep results in '
+        f'{layout.root.resolve()}; pass the same -o/--output-dir and run '
+        'from the same directory as the original run')
 
 
 def prepare_input_pdb(input_pdb, layout, validate_existing=False):
@@ -189,8 +219,10 @@ def main(argv=None):
     config = sampling_config(args)
     if not args.validate_existing:
         check_vina_dependencies()
-    layout = OutputLayout.for_input(args.pdb_file)
+    layout = OutputLayout.for_input(args.pdb_file, args.output_dir)
     reuse_existing = args.validate_existing or args.rank_existing
+    if reuse_existing or config.resume:
+        require_existing_output(layout, _reuse_option(args))
     if not reuse_existing:
         require_resume(layout, config.resume)
     pdb_file = prepare_input_pdb(args.pdb_file, layout, reuse_existing)

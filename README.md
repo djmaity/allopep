@@ -14,14 +14,16 @@ git clone https://github.com/djmaity/allopep.git
 cd allopep
 bash install.sh
 conda activate allopep
-python -m allopep input/structure.pdb -n 10
+allopep input/structure.pdb -n 10
 ```
 
 `-n` requests valid complexes across all selected sites. Add
 `--peptides-per-site` to request that many at each site.
 
-Results are saved in `output/<input-stem>_output/`, including the peptide CSV,
-selected valid complexes, validation reports, and PyMOL sessions.
+You can run `allopep` from any directory, with the input PDB at any path.
+Results are saved in `output/<input-stem>_output/` under the current directory,
+including the peptide CSV, selected valid complexes, validation reports, and
+PyMOL sessions. Use `-o DIR` to write to `DIR/<input-stem>_output/` instead.
 
 ## Documentation
 

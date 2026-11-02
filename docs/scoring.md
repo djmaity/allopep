@@ -54,7 +54,7 @@ clears the previous Vina scoring reports before writing the current cohort.
 
 ```bash
 conda activate allopep
-python -m allopep input/structure.pdb --rank-existing
+allopep input/structure.pdb --rank-existing
 ```
 
 This validates all available saved candidates, then applies `-n` and

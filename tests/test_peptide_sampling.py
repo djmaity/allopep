@@ -478,6 +478,10 @@ class SamplingTests(unittest.TestCase):
         os.chdir(self.root)
         designs = [SimpleNamespace(site=site, sample=sample)
                    for site in (1, 2) for sample in range(3)]
+        # The saved-result modes require the output the mocks stand in for.
+        saved = OutputLayout.for_input('target.pdb')
+        saved.designs_dir.mkdir(parents=True)
+        saved.sampling_summary.touch()
         cases = [(option, per_site) for option in (
             '--validate-existing', '--rank-existing')
                  for per_site in (False, True)]

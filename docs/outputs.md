@@ -1,9 +1,10 @@
 # Outputs and visualization
 
 An input named `input/structure.pdb` uses the output prefix `structure` and
-writes under `output/structure_output/`. Output naming depends on the filename
-stem rather than the full input path. A different input with the same basename
-is rejected if it conflicts with the saved receptor.
+writes under `output/structure_output/`. The `output/` folder is relative to the
+current directory, and `-o DIR` replaces it with `DIR/`. Output naming depends
+on the filename stem rather than the full input path. A different input with the
+same basename is rejected if it conflicts with the saved receptor.
 
 ## Directory map
 

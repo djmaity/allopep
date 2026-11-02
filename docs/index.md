@@ -25,12 +25,12 @@ rank the accepted structures.
 
 ## Start a run
 
-After [installation](installation.md), run these commands from the repository
-root, replacing `input/structure.pdb` with your receptor PDB:
+After [installation](installation.md), run these commands from any directory,
+replacing `input/structure.pdb` with the path to your receptor PDB:
 
 ```bash
 conda activate allopep
-python -m allopep input/structure.pdb
+allopep input/structure.pdb
 ```
 
 The defaults use every selected pocket, seek **10 physically valid complexes
@@ -39,11 +39,12 @@ across all sites**, and permit **10,000 candidate attempts overall**. Add
 site. For a smaller initial run:
 
 ```bash
-python -m allopep input/structure.pdb --max_rank 1 -n 1 --max_num_peptides 32
+allopep input/structure.pdb --max_rank 1 -n 1 --max_num_peptides 32
 ```
 
 This bounds the candidate count; it does not guarantee a passing structure.
-Results are written under `output/structure_output/`.
+Results are written under `output/structure_output/` in the current directory,
+or under `DIR/structure_output/` with `-o DIR`.
 
 ## Find the right guide
 

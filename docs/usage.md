@@ -1,15 +1,15 @@
 # Usage and CLI
 
-Run commands from the AlloPep repository root with the `allopep` environment
-active. AlloPep accepts a receptor structure in PDB format; provide the receptor
-chains intended for design. This CLI does not expose input cleaning or native
-peptide removal.
+Run commands from any directory with the `allopep` environment active.
+`python -m allopep` is equivalent to `allopep`. AlloPep accepts a receptor
+structure in PDB format; provide the receptor chains intended for design. This
+CLI does not expose input cleaning or native peptide removal.
 
 ## Start a bounded design run
 
 ```bash
 conda activate allopep
-python -m allopep input/structure.pdb \
+allopep input/structure.pdb \
   --max_rank 1 \
   --length_min 8 --length_max 13 \
   --num_samples 5 --max_num_peptides 500
@@ -18,7 +18,20 @@ python -m allopep input/structure.pdb \
 This designs against the highest-ranked pocket, samples lengths **8–12**, and
 seeks five physically valid structures with at most 500 candidate attempts.
 Results use the input filename stem: `structure.pdb` maps to
-`output/structure_output/`.
+`output/structure_output/` under the current directory.
+
+Use `-o` to choose a different parent folder:
+
+```bash
+allopep /data/structure.pdb -o /results
+```
+
+This writes to `/results/structure_output/`. Later `--resume`,
+`--validate-existing`, and `--rank-existing` runs look in the same place, so
+repeat the same `-o`, or run from the same directory if you did not use `-o`.
+If no previous results are found there, these three modes stop with exit
+status `1` before generating or scoring anything, rather than starting a fresh
+run in the wrong place.
 
 > **Peptide length uses an exclusive upper bound**
 >
@@ -30,12 +43,13 @@ Results use the input filename stem: `structure.pdb` maps to
 ## Command-line reference
 
 ```text
-python -m allopep PDB_FILE [OPTIONS]
+allopep PDB_FILE [OPTIONS]
 ```
 
 | Argument | Default | Meaning |
 | --- | --- | --- |
 | `pdb_file` | Required | Receptor PDB path; its stem determines the output directory. |
+| `-o`, `--output-dir` | `./output` | Parent folder for results, written to `OUTPUT_DIR/<input-stem>_output/`. |
 | `-r`, `--max_rank` | `all` | Use every ranked GAPS pocket, or the first positive integer number of pockets. |
 | `-l`, `--length_min` | `5` | Minimum generated peptide length, inclusive. |
 | `-L`, `--length_max` | `10` | Maximum length, exclusive in PepGLAD. |
@@ -67,7 +81,7 @@ For example, `-n 10 --attempt-multiplier 200` permits 2,000 candidates overall.
 to each site:
 
 ```bash
-python -m allopep input/structure.pdb -n 10 --peptides-per-site
+allopep input/structure.pdb -n 10 --peptides-per-site
 ```
 
 Every candidate consumes an attempt, including invalid coordinates, relaxation
@@ -80,7 +94,7 @@ for adaptive rounds, reservation accounting, and selected structures.
 Use the same input and generation settings:
 
 ```bash
-python -m allopep input/structure.pdb --max_rank 1 \
+allopep input/structure.pdb --max_rank 1 \
   --length_min 8 --length_max 13 -n 5 --max_num_peptides 1000 --resume
 ```
 
@@ -93,8 +107,8 @@ settings, or altered saved artifacts cause resume to fail. The
 ## Recheck or rerank saved structures
 
 ```bash
-python -m allopep input/structure.pdb --validate-existing
-python -m allopep input/structure.pdb --rank-existing
+allopep input/structure.pdb --validate-existing
+allopep input/structure.pdb --rank-existing
 ```
 
 These modes discover available structures in round directories and check every

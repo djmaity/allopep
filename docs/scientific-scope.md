@@ -28,8 +28,8 @@ revalidation. Do not describe relaxed thresholds as repaired coordinates.
 
 ## Pocket-recovery evidence
 
-The `GAPS_DEFAULT_SELECTION_REPORT.md` report preserves saved historical
-selector optimization evidence. Its radius-limited pockets, score cutoff,
+An earlier selector optimization was recorded in a saved report that is not
+part of this repository. Its radius-limited pockets, score cutoff,
 relative-accessibility settings, and neighborhood blending differ from the
 current connected-pocket selector.
 
@@ -40,11 +40,12 @@ Neither establishes the current selector's recovery or the recovery of later
 ranked pockets. Earlier connected-pocket experiments also used different
 thresholds.
 
-Benchmark code and saved artifacts live in `~/pocket_detection`. Record the
-exact selector, cohort, native-label definition, rank convention, and metric
-threshold when using those results. A 5 Å heavy-atom native contact definition
-and an 8 Å Cα definition are different labels; strict `>` and inclusive `>=`
-cutoffs also produce different success counts.
+The benchmark code and saved artifacts are not tracked in this repository and
+are not available from this checkout. Any reuse of those results must restate
+the exact selector, cohort, native-label definition, rank convention, and
+metric threshold. A 5 Å heavy-atom native contact definition and an 8 Å Cα
+definition are different labels; strict `>` and inclusive `>=` cutoffs also
+produce different success counts.
 
 ## Fair comparisons and reproducible reports
 

@@ -75,14 +75,17 @@ Ruff enforces the width limits configured in `pyproject.toml`: 79 columns
 for code and 72 for comments and docstrings.
 
 ```bash
-conda run --no-capture-output -n allopep ruff check allopep/
+conda run --no-capture-output -n allopep ruff check .
 ```
 
 Ruff is used only as a detector. Do not run `ruff format` or another
 formatter on this repository: it would reflow the many lines that are
 already within the limits, producing a diff far larger than the problem.
-Fix reported lines by hand. The `allopep` package is clean; `tests/` still
-has known violations and is not yet part of this check.
+Fix reported lines by hand.
+
+Both `allopep/` and `tests/` are clean. The patched `GAPS/` and `PepGLAD/`
+checkouts, the generated `site/`, and `normal_mode_analysis.ipynb` are
+excluded in `pyproject.toml`.
 
 Because the package is imported from three environments, check that the two
 foreign ones can still load it after changing imports:

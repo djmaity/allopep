@@ -1,4 +1,9 @@
-"""Run with `conda run -n PepGLAD python tests/pepglad_guidance_case.py`."""
+"""PepGLAD-environment checks.
+
+Run with::
+
+    conda run -n PepGLAD python tests/pepglad_guidance_case.py
+"""
 
 import json
 import sys
@@ -18,7 +23,7 @@ from api.run import DesignDataset, peptide_coordinates_supported, relax_designs
 
 
 class PepgladPocketTests(unittest.TestCase):
-    def test_individual_relaxation_failure_is_quarantined_and_other_samples_finish(self):
+    def test_one_relaxation_failure_is_quarantined_others_finish(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             paths = [str(root / f'target_{index}.pdb') for index in range(2)]
@@ -28,16 +33,25 @@ class PepgladPocketTests(unittest.TestCase):
                 'id': f'target_{index}', 'pep_seq': 'LHLKA',
                 'pep_chain': 'B', 'rec_chains': ['A'],
             }) + '\n' for index in range(2)))
-            failure = ray.exceptions.RayTaskError('openmm_relax', 'test traceback',
-                                                   ValueError('bad sample'))
+            failure = ray.exceptions.RayTaskError(
+                'openmm_relax', 'test traceback', ValueError('bad sample'))
+
             def get_result(future):
                 if future == paths[0]:
                     raise failure
                 return future
+
+            def relax_remote(path):
+                return path
+
+            def wait_one(futures, **kw):
+                return futures[:1], futures[1:]
+
             with patch('api.run.ray.init'), \
                  patch('api.run.ray.shutdown') as shutdown, \
-                 patch('api.run.openmm_relax.remote', side_effect=lambda path: path), \
-                 patch('api.run.ray.wait', side_effect=lambda futures, **kw: (futures[:1], futures[1:])), \
+                 patch('api.run.openmm_relax.remote',
+                       side_effect=relax_remote), \
+                 patch('api.run.ray.wait', side_effect=wait_one), \
                  patch('api.run.ray.get', side_effect=get_result) as get:
                 relax_designs(paths, directory)
             self.assertEqual(get.call_count, 2)
@@ -45,7 +59,8 @@ class PepgladPocketTests(unittest.TestCase):
             self.assertFalse(Path(paths[0]).exists())
             self.assertTrue((root / 'invalid_designs/target_0.pdb').is_file())
             self.assertTrue(Path(paths[1]).is_file())
-            records = [json.loads(line) for line in (root / 'summary.jsonl').read_text().splitlines()]
+            lines = (root / 'summary.jsonl').read_text().splitlines()
+            records = [json.loads(line) for line in lines]
             self.assertEqual(records[0]['status'], 'error')
             self.assertNotIn('status', records[1])
             self.assertTrue((root / 'target_0.pdb.relax_error.json').is_file())
@@ -62,7 +77,8 @@ class PepgladPocketTests(unittest.TestCase):
 
     def test_two_residue_pocket_prepares_finite_covariance(self):
         pdb = ROOT / 'PepGLAD/assets/1ssc_A_B.pdb'
-        entries = json.loads((ROOT / 'PepGLAD/assets/1ssc_A_pocket.json').read_text())[:2]
+        pocket_json = ROOT / 'PepGLAD/assets/1ssc_A_pocket.json'
+        entries = json.loads(pocket_json.read_text())[:2]
         with tempfile.TemporaryDirectory() as directory:
             pocket = Path(directory) / 'pocket.json'
             pocket.write_text(json.dumps(entries))

@@ -22,10 +22,13 @@ include = ["allopep*"]
 # Width limits only: 79 columns for code, 72 for comments and
 # docstrings. Ruff is used as a detector, never as a formatter, because
 # a blanket reflow would rewrite lines that are already within the
-# limits. The patched external checkouts are not ours to lint.
+# limits. The patched external checkouts are not ours to lint, and the
+# normal-mode notebook is unused reference material.
 [tool.ruff]
 line-length = 79
-extend-exclude = ["GAPS", "PepGLAD", "site"]
+extend-exclude = [
+    "GAPS", "PepGLAD", "site", "normal_mode_analysis.ipynb",
+]
 
 [tool.ruff.lint]
 select = ["E501", "W505"]

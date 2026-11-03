@@ -21,7 +21,7 @@ def _probe_validation(entry, peptide_chain):
 
 
 class ValidationPolicyTests(unittest.TestCase):
-    def test_parallel_validation_runs_in_multiple_processes_and_keeps_order(self):
+    def test_parallel_validation_uses_processes_and_keeps_order(self):
         entries = [{'path': f'sample_{index}.pdb', 'site': 1, 'sample': index,
                     'fail': index == 2} for index in range(4)]
         with patch('allopep.validation.validate_structure', _probe_validation):
@@ -32,7 +32,9 @@ class ValidationPolicyTests(unittest.TestCase):
         self.assertEqual([row['status'] for row in rows],
                          ['valid', 'valid', 'error', 'valid'])
         self.assertIn('ValueError: sample failure', rows[2]['reasons'])
-        self.assertEqual(len({row['pid'] for row in rows if row['status'] == 'valid'}), 2)
+        valid_pids = {row['pid'] for row in rows
+                      if row['status'] == 'valid'}
+        self.assertEqual(len(valid_pids), 2)
 
     def test_rejection_reasons_preserve_policy_and_order(self):
         metrics = {field: 0 for field in FIELDS}
@@ -61,7 +63,8 @@ class ValidationPolicyTests(unittest.TestCase):
                 self.assertEqual(tuple(reader.fieldnames), FIELDS)
                 self.assertEqual(next(reader)['reasons'], 'inverted_ca')
             detail = json.loads(jsonl_path.read_text(encoding='utf-8'))
-            self.assertEqual(detail['details']['inverted_ca'][0]['residue'], 'B.1.ALA')
+            inverted = detail['details']['inverted_ca']
+            self.assertEqual(inverted[0]['residue'], 'B.1.ALA')
 
 
 if __name__ == '__main__':

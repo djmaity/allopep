@@ -31,15 +31,19 @@ class RawGapsScoresTests(unittest.TestCase):
             ], dtype=np.float32),
         }
         structure = cle_structure(source)
-        probabilities = np.array([0.873241, 0.712345, 0.123456], dtype=np.float32)
+        probabilities = np.array([0.873241, 0.712345, 0.123456],
+                                 dtype=np.float32)
         records = score_records(structure, probabilities)
-        self.assertEqual([(r['chain'], r['number'], r['icode']) for r in records], [
+        identities = [(r['chain'], r['number'], r['icode'])
+                      for r in records]
+        self.assertEqual(identities, [
             ('A', 42, ' '), ('A', 42, 'A'), ('B', 7, ' '),
         ])
         serialized = json.loads(json.dumps(records))
         self.assertGreater(abs(serialized[0]['score'] - 0.87), 0.003)
         encoded = encode_bfactor(structure, probabilities)
-        self.assertAlmostEqual(float(encoded['bfactor'][0]), serialized[0]['score'])
+        self.assertAlmostEqual(float(encoded['bfactor'][0]),
+                               serialized[0]['score'])
         with tempfile.TemporaryDirectory() as directory:
             pdb = Path(directory) / 'scored.pdb'
             save_pdb(split_by_chain(encoded), str(pdb))

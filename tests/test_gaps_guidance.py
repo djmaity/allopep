@@ -30,13 +30,16 @@ class GapsGuidanceTests(unittest.TestCase):
         positions = [('A', 42, ' '), ('A', 42, 'A'), ('A', 43, ' ')]
         for index, (chain, number, icode) in enumerate(positions):
             line = lines[index]
-            lines[index] = line[:21] + chain + f'{number:4d}' + icode + line[27:]
+            lines[index] = (line[:21] + chain + f'{number:4d}'
+                            + icode + line[27:])
+        scores_list = [0.873241, 0.772346, 0.123456]
+        ca_list = [[0.0, 0.0, 0.0], [4.0, 0.0, 0.0], [8.0, 0.0, 0.0]]
         records = []
         for index, (chain, number, icode) in enumerate(positions):
             records.append({
                 'chain': chain, 'number': number, 'icode': icode,
-                'resname': 'ALA', 'score': [0.873241, 0.772346, 0.123456][index],
-                'ca': [[0.0, 0.0, 0.0], [4.0, 0.0, 0.0], [8.0, 0.0, 0.0]][index],
+                'resname': 'ALA', 'score': scores_list[index],
+                'ca': ca_list[index],
             })
         areas = {'A': {
             '42': SimpleNamespace(total=12.5, relativeTotal=0.0),
@@ -48,21 +51,28 @@ class GapsGuidanceTests(unittest.TestCase):
             pdb = Path(directory) / 'target.pdb'
             scores = Path(directory) / 'target_GAPS_scores.json'
             pdb.write_text('\n'.join(lines) + '\n')
-            scores.write_text(json.dumps({'schema_version': 1, 'residues': records}))
-            with patch('allopep.gaps.freesasa.calcBioPDB', return_value=(mock_sasa, {})):
+            scores.write_text(json.dumps(
+                {'schema_version': 1, 'residues': records}))
+            with patch('allopep.gaps.freesasa.calcBioPDB',
+                       return_value=(mock_sasa, {})):
                 scored = load_scored_residues(pdb, scores)
                 self.assertEqual([r.key for r in scored], positions)
                 self.assertEqual(scored[0].score, 0.873241)
                 self.assertEqual([r.sasa for r in scored], [12.5, 0.25, 0.0])
                 pocket, = select_contexts(scored)
-                self.assertEqual([r.key for r in pocket.residues], positions[:2])
+                self.assertEqual([r.key for r in pocket.residues],
+                                 positions[:2])
                 records[1]['icode'] = 'B'
-                scores.write_text(json.dumps({'schema_version': 1, 'residues': records}))
-                with self.assertRaisesRegex(ValueError, 'missing from input PDB'):
+                scores.write_text(json.dumps(
+                    {'schema_version': 1, 'residues': records}))
+                with self.assertRaisesRegex(
+                        ValueError, 'missing from input PDB'):
                     load_scored_residues(pdb, scores)
                 records[1]['icode'] = ' '
-                scores.write_text(json.dumps({'schema_version': 1, 'residues': records}))
-                with self.assertRaisesRegex(ValueError, 'Duplicate GAPS residue'):
+                scores.write_text(json.dumps(
+                    {'schema_version': 1, 'residues': records}))
+                with self.assertRaisesRegex(
+                        ValueError, 'Duplicate GAPS residue'):
                     load_scored_residues(pdb, scores)
 
     def test_score_cutoff_and_positive_absolute_sasa_are_strict(self):
@@ -91,16 +101,19 @@ class GapsGuidanceTests(unittest.TestCase):
                     ScoredResidue('A', 1, ' ', 0.8, (0.0, 0.0, -1.0), 0.5),
                     ScoredResidue('A', 2, ' ', 0.8, (0.0, 0.0, 0.0), 0.5),
                     ScoredResidue('A', 3, ' ', 0.8, (0.0, 0.0, distance), 0.5),
-                    ScoredResidue('A', 4, ' ', 0.8, (0.0, 0.0, distance + 1), 0.5),
+                    ScoredResidue('A', 4, ' ', 0.8,
+                                  (0.0, 0.0, distance + 1), 0.5),
                 ]
                 pockets = select_contexts(residues)
-                self.assertEqual([len(p.residues) for p in pockets], expected_sizes)
+                self.assertEqual([len(p.residues) for p in pockets],
+                                 expected_sizes)
                 keys = [r.key for p in pockets for r in p.residues]
                 self.assertEqual(len(keys), len(set(keys)))
                 if len(pockets) == 2:
                     self.assertTrue(all(
                         math.dist(a.ca, b.ca) > 8.0
-                        for a in pockets[0].residues for b in pockets[1].residues))
+                        for a in pockets[0].residues
+                        for b in pockets[1].residues))
 
     def test_connections_are_transitive_without_a_center_radius(self):
         residues = [
@@ -122,11 +135,13 @@ class GapsGuidanceTests(unittest.TestCase):
         ]
         for score, sasa in ((0.5, 0.5), (0.0, 0.5), (0.9, -0.1), (0.9, 0.0)):
             with self.subTest(score=score, sasa=sasa):
-                bridge = ScoredResidue('A', 3, ' ', score, (8.0, 0.0, 0.0), sasa)
+                bridge = ScoredResidue('A', 3, ' ', score,
+                                       (8.0, 0.0, 0.0), sasa)
                 pockets = select_contexts([*residues, bridge])
                 self.assertEqual([p.residues for p in pockets],
                                  [tuple(residues[:2]), tuple(residues[2:])])
-        bridge = ScoredResidue('A', 3, ' ', 0.500001, (8.0, 0.0, 0.0), 0.000001)
+        bridge = ScoredResidue('A', 3, ' ', 0.500001,
+                               (8.0, 0.0, 0.0), 0.000001)
         pocket, = select_contexts([*residues, bridge])
         self.assertEqual([r.number for r in pocket.residues], [1, 2, 3, 4, 5])
 
@@ -172,7 +187,8 @@ class GapsGuidanceTests(unittest.TestCase):
         ]
         with patch('allopep.gaps.load_scored_residues', return_value=residues):
             default = select_guidance_contexts('unused', 'unused')
-            explicit_all = select_guidance_contexts('unused', 'unused', max_rank='all')
+            explicit_all = select_guidance_contexts(
+                'unused', 'unused', max_rank='all')
             top = select_guidance_contexts('unused', 'unused', max_rank=2)
         self.assertEqual(len(default), 4)
         self.assertEqual(default, explicit_all)
@@ -202,19 +218,22 @@ class GapsGuidanceTests(unittest.TestCase):
             self.assertEqual(select_contexts(inputs), expected)
 
     def test_no_usable_pockets_preserves_selection_error(self):
+        message = 'No usable GAPS-guided receptor contexts found'
         for residues in (
                 [],
                 [ScoredResidue('A', 1, ' ', 0.9, (0.0, 0.0, 0.0), 0.5)],
                 [ScoredResidue('A', 1, ' ', 0.5, (0.0, 0.0, 0.0), 0.5)],
-                [ScoredResidue('A', i + 1, ' ', 0.9, (float(i * 20), 0.0, 0.0), 0.5)
+                [ScoredResidue('A', i + 1, ' ', 0.9,
+                               (float(i * 20), 0.0, 0.0), 0.5)
                  for i in range(2)]):
             with self.subTest(residues=residues), self.assertRaisesRegex(
-                    ValueError, 'No usable GAPS-guided receptor contexts found'):
+                    ValueError, message):
                 select_contexts(residues)
 
     def test_invalid_rank_is_rejected(self):
         for rank in (0, -1, True, 1.0, '2', None, float('nan')):
-            with self.subTest(rank=rank), self.assertRaisesRegex(ValueError, 'max_rank'):
+            with self.subTest(rank=rank), self.assertRaisesRegex(
+                    ValueError, 'max_rank'):
                 select_contexts([], max_rank=rank)
 
     def test_invalid_sidecar_schema_is_rejected_before_pdb_loading(self):
@@ -223,7 +242,8 @@ class GapsGuidanceTests(unittest.TestCase):
             for payload in ([], {'schema_version': 2, 'residues': []},
                             {'schema_version': 1, 'residues': {}}):
                 scores.write_text(json.dumps(payload))
-                with self.assertRaisesRegex(ValueError, 'Invalid GAPS score sidecar'):
+                with self.assertRaisesRegex(
+                        ValueError, 'Invalid GAPS score sidecar'):
                     load_scored_residues('unused.pdb', scores)
 
 

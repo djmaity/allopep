@@ -1,4 +1,4 @@
-"""Check selected-complex exports and their joined pocket/score table."""
+"""Check selected-complex exports and the pocket/score table."""
 
 import csv
 import tempfile
@@ -141,7 +141,7 @@ class PeptideExportTests(unittest.TestCase):
             '**/*.pdb'))), 3)
 
     def existing_main(self, arguments):
-        """Run the real selection/export flow around saved validation data."""
+        """Run the real export flow around saved validation data."""
         with patch('allopep.cli.OutputLayout.for_input',
                    return_value=self.layout), \
              patch('allopep.cli.find_existing_pepglad_outputs',

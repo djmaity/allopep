@@ -133,7 +133,8 @@ class PreparationTests(unittest.TestCase):
             source = Path(temporary) / "complex.pdb"
             source.write_text(content)
             preparer = preparation.MeekoPreparer(hydrogen_policy="keep")
-            coordinates = preparer.selector.selected_coordinates(source, ("B",))
+            coordinates = preparer.selector.selected_coordinates(
+                source, ("B",))
         self.assertEqual(coordinates, [(5.0, 6.0, 7.0)])
 
     def test_meeko_creates_a_rigid_ligand_record_without_docking(self):
@@ -176,7 +177,8 @@ class PreparationTests(unittest.TestCase):
             source = Path(temporary) / "peptide.pdb"
             source.write_text(content)
             preparer = preparation.MeekoPreparer(hydrogen_policy="keep")
-            receptor_coordinates = preparer.selector.selected_coordinates(source)
+            receptor_coordinates = (
+                preparer.selector.selected_coordinates(source))
             peptide_coordinates = preparer.selector.selected_coordinates(
                 source, as_ligand=True)
 
@@ -197,8 +199,9 @@ class PreparationTests(unittest.TestCase):
             writer.set_structure(structure)
             writer.save(str(mmcif))
 
-            coordinates = preparation.MeekoPreparer(
-                hydrogen_policy="keep").selector.selected_coordinates(mmcif, ("B",))
+            preparer = preparation.MeekoPreparer(hydrogen_policy="keep")
+            coordinates = preparer.selector.selected_coordinates(
+                mmcif, ("B",))
 
         self.assertEqual(coordinates, [(1.0, 2.0, 3.0)])
 

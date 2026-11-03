@@ -1,4 +1,4 @@
-"""Score physically valid PepGLAD complexes with AlloPep's Vina scorer."""
+"""Score physically valid PepGLAD complexes with the Vina scorer."""
 
 import importlib
 import math
@@ -35,10 +35,11 @@ def _check_chains(design):
 
 
 def rank_pepglad_outputs(valid_designs, layout):
-    """Score selected valid designs and rank finite Vina totals ascending.
+    """Score selected valid designs and rank their Vina totals.
 
-    Each pose runs in a disposable worker through the shared scorer. A
-    scoring failure never changes the physical-validity or sampling policy.
+    Finite totals are ranked ascending. Each pose runs in a
+    disposable worker through the shared scorer. A scoring failure
+    never changes the physical-validity or sampling policy.
     """
     from .scoring.service import BatchRunner
     from .scoring.models import CombinedStructure, ScoreJob, WorkflowConfig

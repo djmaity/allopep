@@ -40,7 +40,7 @@ def find_meeko_receptor_preparer() -> Path:
 
 
 def installed_version(distribution: str) -> str:
-    """Return an installed distribution version for result provenance."""
+    """Return an installed distribution version for provenance."""
     try:
         return importlib.metadata.version(distribution)
     except importlib.metadata.PackageNotFoundError:
@@ -48,7 +48,7 @@ def installed_version(distribution: str) -> str:
 
 
 class MeekoPreparer:
-    """Convert selected structures to rigid PDBQT and verify the result."""
+    """Convert selected structures to rigid PDBQT and verify it."""
 
     def __init__(self,
         *, model_index: int = 0, keep_hetero_residues: Sequence[str] = (),
@@ -69,7 +69,8 @@ class MeekoPreparer:
         try:
             from meeko import ResidueChemTemplates
         except ImportError as exc:
-            raise RuntimeError("Meeko is required for PDBQT preparation") from exc
+            raise RuntimeError(
+                "Meeko is required for PDBQT preparation") from exc
         templates = ResidueChemTemplates.create_from_defaults()
         if meeko_templates is not None:
             templates.add_json_file(str(meeko_templates))

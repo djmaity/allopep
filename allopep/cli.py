@@ -25,9 +25,11 @@ def _max_rank(value):
     try:
         rank = int(value)
     except ValueError as exc:
-        raise argparse.ArgumentTypeError('expected a positive integer or "all"') from exc
+        raise argparse.ArgumentTypeError(
+            'expected a positive integer or "all"') from exc
     if rank < 1:
-        raise argparse.ArgumentTypeError('expected a positive integer or "all"')
+        raise argparse.ArgumentTypeError(
+            'expected a positive integer or "all"')
     return rank
 
 
@@ -42,7 +44,8 @@ def parse_args(argv=None):
                         'to OUTPUT_DIR/<input-stem>_output/ '
                         '(default: ./output)')
     parser.add_argument('-r', '--max_rank', default='all', type=_max_rank,
-                        help='Number of ranked GAPS pockets to design (default: "all"; or a positive integer)')
+                        help='Number of ranked GAPS pockets to design '
+                        '(default: "all"; or a positive integer)')
     parser.add_argument('-l', '--length_min', default=5, type=int,
                         help='Minimum length of the predicted peptide')
     parser.add_argument('-L', '--length_max', default=10, type=int,
@@ -62,16 +65,21 @@ def parse_args(argv=None):
                         '--peptides-per-site; overrides '
                         '--attempt-multiplier times -n')
     parser.add_argument('--round-timeout-seconds', default=3600, type=int,
-                        help='Deadline for generation, relaxation and validation of one round (default: 3600)')
+                        help='Deadline for generation, relaxation and '
+                        'validation of one round (default: 3600)')
     parser.add_argument('-c', '--peptide-chain', default=None,
-                        help='Known peptide chain ID; uses PepGLAD summary if omitted')
+                        help='Known peptide chain ID; uses PepGLAD '
+                        'summary if omitted')
     existing = parser.add_mutually_exclusive_group()
     existing.add_argument('-v', '--validate-existing', action='store_true',
-                          help='Check existing PepGLAD PDBs without rerunning design or scoring')
+                          help='Check existing PepGLAD PDBs without '
+                          'rerunning design or scoring')
     existing.add_argument('-R', '--rank-existing', action='store_true',
-                          help='Validate and rank existing PepGLAD PDBs with Vina')
+                          help='Validate and rank existing PepGLAD PDBs '
+                          'with Vina')
     existing.add_argument('--resume', action='store_true',
-                          help='Resume sampling using saved rounds and cumulative attempt budgets')
+                          help='Resume sampling using saved rounds and '
+                          'cumulative attempt budgets')
     return parser.parse_args(argv)
 
 
@@ -102,7 +110,7 @@ def require_existing_output(layout, option):
 
 
 def prepare_input_pdb(input_pdb, layout, validate_existing=False):
-    """Keep the input PDB with its output and reuse it for later validation."""
+    """Keep the input PDB with its output for later validation."""
     input_pdb = Path(input_pdb)
     out_dir = layout.root
     saved_pdb = out_dir / input_pdb.name
@@ -127,8 +135,9 @@ def prepare_input_pdb(input_pdb, layout, validate_existing=False):
     return str(source)
 
 
-def run_pepglad_round(config, pdb_file, pocket_file, round_dir, count, *, deadline):
-    """Generate one isolated round; the controller owns IDs and attempt budgets."""
+def run_pepglad_round(config, pdb_file, pocket_file, round_dir, count,
+                      *, deadline):
+    """Generate one round; the controller owns IDs and budgets."""
     env = os.environ.copy()
     env['RAY_ACCEL_ENV_VAR_OVERRIDE_ON_ZERO'] = '0'
     pdbfixer_warning = (
@@ -157,12 +166,14 @@ def run_pepglad(config, pdb_file, layout, contexts):
             config, pdb_file, layout, contexts,
             run_pepglad_round, run_openstructure_validation)
         session = write_allosteric_site_visualization(layout)
-        print(f'Allosteric site visualization: {session.with_suffix(".pml")} and {session}')
+        script = session.with_suffix('.pml')
+        print(f'Allosteric site visualization: {script} and {session}')
         return controller.run()
 
 
-def run_openstructure_validation(generated, directory, layout, peptide_chain, input_pdb,
-                                *, deadline=None, allow_errors=False):
+def run_openstructure_validation(generated, directory, layout,
+                                 peptide_chain, input_pdb,
+                                 *, deadline=None, allow_errors=False):
     """Check generated complexes and return the designs that pass."""
     csv_file, jsonl_file, manifest = layout.validation_reports(directory)
     write_manifest(generated, manifest, input_pdb)
@@ -171,14 +182,16 @@ def run_openstructure_validation(generated, directory, layout, peptide_chain, in
     _, rows, by_path = read_rows(csv_file, generated)
     errors = [row for row in rows if row['status'] == 'error']
     if errors and not allow_errors:
-        raise RuntimeError(f'{len(errors)} OpenStructure checks failed; see {csv_file}')
+        raise RuntimeError(
+            f'{len(errors)} OpenStructure checks failed; see {csv_file}')
     valid = []
     for row in rows:
         design = by_path[row['path']]
         if row['status'] == 'error':
             continue
         if row['peptide_chain'] != design.peptide_chain:
-            raise RuntimeError(f'OpenStructure peptide chain differs for {row["path"]}')
+            raise RuntimeError(
+                f'OpenStructure peptide chain differs for {row["path"]}')
         if row['status'] == 'valid':
             valid.append(design)
     return valid
@@ -206,7 +219,8 @@ def sampling_config(args):
     return SamplingConfig(
         length_min=args.length_min, length_max=args.length_max,
         num_samples=args.num_samples,
-        max_attempts=(args.max_num_peptides if args.max_num_peptides is not None
+        max_attempts=(args.max_num_peptides
+                      if args.max_num_peptides is not None
                       else args.attempt_multiplier * args.num_samples),
         round_timeout_seconds=args.round_timeout_seconds,
         peptide_chain=args.peptide_chain, resume=args.resume,
@@ -232,11 +246,14 @@ def main(argv=None):
     if reuse_existing:
         generated = find_existing_pepglad_outputs(layout)
         if not generated:
-            raise FileNotFoundError(f'No PepGLAD PDBs found under {layout.root}')
+            raise FileNotFoundError(
+                f'No PepGLAD PDBs found under {layout.root}')
         session = write_allosteric_site_visualization(layout)
-        print(f'Allosteric site visualization: {session.with_suffix(".pml")} and {session}')
+        script = session.with_suffix('.pml')
+        print(f'Allosteric site visualization: {script} and {session}')
         valid_designs = run_openstructure_validation(
-            generated, layout.score_dir, layout, config.peptide_chain, pdb_file)
+            generated, layout.score_dir, layout, config.peptide_chain,
+            pdb_file)
         valid_designs = select_valid_designs(valid_designs, config)
         sites = {design.site for design in generated}
         sites.update(site for pocket in layout.sites_dir.glob('*.json')

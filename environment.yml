@@ -21,6 +21,7 @@ dependencies:
   - psutil>=5.9,<8
   - pymol-open-source=3.1.0
   - rdkit>=2024.09,<2027
+  - ruff>=0.17,<0.18  # line-width checks configured in pyproject.toml
   - scipy=1.13.1
   - vina=1.2.7
   - prody       # for Normal Mode Analysis

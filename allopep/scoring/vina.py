@@ -223,7 +223,8 @@ class VinaPoseScorer:
         try:
             from vina import Vina
         except ImportError as exc:
-            raise RuntimeError("The Python package 'vina' is required") from exc
+            raise RuntimeError(
+                "The Python package 'vina' is required") from exc
         self.engine: Any | None = Vina(sf_name="vina", cpu=cpu, verbosity=0)
         self.engine.set_receptor(str(self.receptor_pdbqt))
         # Build all atom-type maps before loading residue fragments.
@@ -233,13 +234,14 @@ class VinaPoseScorer:
         self._used = False
 
     def _score_raw(self, ligand: str) -> list[float]:
-        """Read unrounded native terms before summing fragment energies."""
+        """Read unrounded native terms before summing fragments."""
         if self.engine is None:
             raise RuntimeError("The Vina scorer has already been closed")
         self.engine.set_ligand_from_string(ligand)
         native = getattr(self.engine, "_vina", None)
         if native is None:
-            raise RuntimeError("The installed Vina package does not expose raw scores")
+            raise RuntimeError(
+                "The installed Vina package does not expose raw scores")
         return [float(value) for value in native.score()]
 
     def score_pose(

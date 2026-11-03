@@ -20,8 +20,8 @@ _VALIDATION_SUFFIXES = ('.csv', '.jsonl', '_manifest.json')
 class OutputLayout:
     """Every path AlloPep writes for one input structure.
 
-    Names are derived here and nowhere else, so renaming an artifact is a
-    single edit. Site numbers start at 1.
+    Names are derived here and nowhere else, so renaming an
+    artifact is a single edit. Site numbers start at 1.
     """
 
     root: Path
@@ -34,7 +34,7 @@ class OutputLayout:
 
     @classmethod
     def at(cls, root, prefix):
-        """Adopt an existing output directory, as the resume paths do."""
+        """Adopt an existing output directory, as resume paths do."""
         return cls(Path(root), prefix)
 
     def resolved(self):
@@ -101,7 +101,7 @@ class OutputLayout:
                 / f'{self.prefix}_site_{site}_peptide_{sample}.pdb')
 
     def site_number(self, path):
-        """Recover a site number from a design or pocket path, or None."""
+        """Return a design or pocket path's site number, or None."""
         pattern = re.compile(
             rf'^{re.escape(self.prefix)}_allosteric_site_([1-9]\d*)'
             r'(?:_codesign|\.json)$')

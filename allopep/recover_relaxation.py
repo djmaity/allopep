@@ -1,11 +1,11 @@
-"""Inspect or finish OpenMM relaxation in an interrupted PepGLAD site directory.
+"""Inspect or finish OpenMM relaxation in a PepGLAD site directory.
 
 Run from the repository root with the PepGLAD environment::
 
     python -m allopep.recover_relaxation ROUND_DIR
 
-The default is read-only; --apply moves malformed generated PDBs aside and
-relaxes the remaining unfinished designs.
+The default is read-only; --apply moves malformed generated PDBs
+aside and relaxes the remaining unfinished designs.
 """
 
 import argparse
@@ -58,10 +58,12 @@ def main():
     parser = argparse.ArgumentParser(
         prog='python -m allopep.recover_relaxation', description=__doc__)
     parser.add_argument('site_dir', type=Path)
-    parser.add_argument('--apply', action='store_true',
-                        help='Quarantine malformed PDBs and relax pending designs')
-    parser.add_argument('--timeout-seconds', type=int, default=180,
-                        help='Maximum relaxation time per design (default: 180)')
+    parser.add_argument(
+        '--apply', action='store_true',
+        help='Quarantine malformed PDBs and relax pending designs')
+    parser.add_argument(
+        '--timeout-seconds', type=int, default=180,
+        help='Maximum relaxation time per design (default: 180)')
     args = parser.parse_args()
     if args.timeout_seconds < 1:
         parser.error('--timeout-seconds must be positive')

@@ -1,4 +1,4 @@
-"""Bounded, resumable rejection sampling of physically valid PepGLAD designs."""
+"""Bounded, resumable rejection sampling of valid PepGLAD designs."""
 
 import csv
 import fcntl
@@ -32,7 +32,7 @@ def sampling_lock(layout):
 
 
 def next_round_size(target, attempted, valid, previous, cap):
-    """Estimate demand independently per site, limiting growth and overshoot."""
+    """Estimate per-site demand, limiting growth and overshoot."""
     if valid >= target or attempted >= cap:
         return 0
     if not attempted:
@@ -40,7 +40,8 @@ def next_round_size(target, attempted, valid, previous, cap):
     elif not valid:
         wanted = previous * 2
     else:
-        # Integer arithmetic avoids rounding errors in ceil(remaining / p / 8).
+        # Integer arithmetic avoids rounding errors in
+        # ceil(remaining / p / 8).
         numerator = (target - valid) * attempted
         wanted = 8 * ((numerator + 8 * valid - 1) // (8 * valid))
         wanted = min(wanted, previous * 2)
@@ -50,7 +51,8 @@ def next_round_size(target, attempted, valid, previous, cap):
 def require_resume(layout, resume):
     outputs = layout.designs_dir
     state = layout.sampling_summary
-    if not resume and (state.exists() or (outputs.exists() and any(outputs.iterdir()))):
+    has_outputs = outputs.exists() and any(outputs.iterdir())
+    if not resume and (state.exists() or has_outputs):
         raise ValueError('Existing PepGLAD outputs require --resume; '
                          'use a separate input/output prefix for a fresh run')
 
@@ -75,17 +77,20 @@ class SamplingConfig:
     def __post_init__(self):
         if self.length_min < 1 or self.length_max < self.length_min:
             raise ValueError(
-                '--length_min must be positive and no greater than --length_max')
+                '--length_min must be positive and no greater than '
+                '--length_max')
         if self.num_samples < 1:
             raise ValueError('--num_samples must be positive')
         if self.max_attempts < self.num_samples:
             raise ValueError(
-                '--max_num_peptides must be positive and at least --num_samples')
+                '--max_num_peptides must be positive and at least '
+                '--num_samples')
         if self.round_timeout_seconds < 1:
             raise ValueError('--round-timeout-seconds must be positive')
         if (self.peptide_chain is not None
                 and not re.fullmatch(r'[A-Za-z0-9]', self.peptide_chain)):
-            raise ValueError('--peptide-chain must be one alphanumeric chain ID')
+            raise ValueError(
+                '--peptide-chain must be one alphanumeric chain ID')
 
 
 def sampling_signature(config, input_pdb):
@@ -97,8 +102,10 @@ def sampling_signature(config, input_pdb):
         'validator_sha256': sha256(PACKAGE_DIR / 'validation.py'),
         'pepglad_patch_sha256': sha256(REPO_ROOT / 'patches/PepGLAD.patch'),
         'pepglad_api_sha256': sha256(REPO_ROOT / 'PepGLAD/api/run.py'),
-        'pepglad_model_sha256': sha256(REPO_ROOT / 'PepGLAD/models/LDM/ldm.py'),
-        'checkpoint_sha256': sha256(REPO_ROOT / 'PepGLAD/checkpoints/codesign.ckpt'),
+        'pepglad_model_sha256': sha256(
+            REPO_ROOT / 'PepGLAD/models/LDM/ldm.py'),
+        'checkpoint_sha256': sha256(
+            REPO_ROOT / 'PepGLAD/checkpoints/codesign.ckpt'),
     }
 
 
@@ -141,10 +148,14 @@ class SamplingController:
             self.state = json.loads(self.summary_path.read_text())
             if (self.state.get('version') != 2
                     or self.state.get('signature') != signature):
-                raise ValueError('Saved sampling input, generation settings, or '
-                                 'validation policy differs; use a fresh output prefix')
+                raise ValueError(
+                    'Saved sampling input, generation settings, or '
+                    'validation policy differs; use a fresh output '
+                    'prefix')
             if len(self.state['sites']) != len(contexts):
-                raise ValueError('Saved sampling site count differs from selected GAPS sites')
+                raise ValueError(
+                    'Saved sampling site count differs from selected '
+                    'GAPS sites')
         else:
             self.state = {'version': 2, 'signature': signature, 'sites': []}
         if not contexts:
@@ -154,31 +165,41 @@ class SamplingController:
             pocket_file = self.layout.pocket_file(rank)
             site_dir = self.layout.site_dir(rank)
             if site_dir.exists() or len(self.state['sites']) >= rank:
-                if not pocket_file.is_file() or json.loads(pocket_file.read_text()) != pocket:
-                    raise ValueError(f'Saved PepGLAD pocket differs for site {rank}: {pocket_file}')
+                saved = (json.loads(pocket_file.read_text())
+                         if pocket_file.is_file() else None)
+                if saved != pocket:
+                    raise ValueError(
+                        f'Saved PepGLAD pocket differs for site {rank}: '
+                        f'{pocket_file}')
             else:
                 atomic_json(pocket_file, pocket)
             if len(self.state['sites']) < rank:
                 rounds = []
                 for entry in site_rounds(site_dir, self.prefix):
+                    relative = entry['directory'].relative_to(self.out_dir)
                     rounds.append({
-                        'directory': str(entry['directory'].relative_to(self.out_dir)),
+                        'directory': str(relative),
                         'start': entry['start'], 'count': entry['count'],
                         'status': 'reserved',
                     })
-                self.state['sites'].append({'site': rank, 'pocket': pocket, 'rounds': rounds})
+                self.state['sites'].append(
+                    {'site': rank, 'pocket': pocket, 'rounds': rounds})
             site = self.state['sites'][rank - 1]
             if site['site'] != rank or site['pocket'] != pocket:
-                raise ValueError(f'Saved PepGLAD pocket differs for site {rank}')
+                raise ValueError(
+                    f'Saved PepGLAD pocket differs for site {rank}')
             end = 0
             for entry in site['rounds']:
-                if (type(entry['start']) is not int or type(entry['count']) is not int
+                if (type(entry['start']) is not int
+                        or type(entry['count']) is not int
                         or entry['start'] != end or entry['count'] < 1):
-                    raise ValueError(f'Invalid reserved sample ranges for site {rank}')
+                    raise ValueError(
+                        f'Invalid reserved sample ranges for site {rank}')
                 end += entry['count']
             if end > self.cap:
-                raise ValueError(f'Site {rank} already charged {end} attempts, exceeding '
-                                 f'--max_num_peptides {self.cap}')
+                raise ValueError(
+                    f'Site {rank} already charged {end} attempts, '
+                    f'exceeding --max_num_peptides {self.cap}')
             self.accepted[rank] = []
         attempted = sum(entry['count'] for site in self.state['sites']
                         for entry in site['rounds'])
@@ -191,7 +212,9 @@ class SamplingController:
     def _directory(self, entry):
         directory = (self.out_dir / entry['directory']).resolve()
         if not directory.is_relative_to(self.out_dir):
-            raise ValueError('Sampling round directory is outside the output directory')
+            raise ValueError(
+                'Sampling round directory is outside the output '
+                'directory')
         return directory
 
     def _save(self):
@@ -208,16 +231,20 @@ class SamplingController:
         self.state['valid_count'] = len(valid_designs)
         self.state['selected_count'] = len(selected)
         for site in self.state['sites']:
-            valid = sorted(self.accepted[site['site']], key=lambda design: design.sample)
+            valid = sorted(self.accepted[site['site']],
+                           key=lambda design: design.sample)
             site['attempted'] = sum(entry['count'] for entry in site['rounds'])
             site['valid_count'] = len(valid)
-            site['selected'] = [{'sample': design.sample, 'path': design.resolved_path}
-                                for design in valid
-                                if design.job_id in selected_ids]
+            site['selected'] = [
+                {'sample': design.sample, 'path': design.resolved_path}
+                for design in valid
+                if design.job_id in selected_ids]
             site['failures'] = {
-                key: sum(entry.get('failures', {}).get(key, 0) for entry in site['rounds'])
+                key: sum(entry.get('failures', {}).get(key, 0)
+                         for entry in site['rounds'])
                 for key in ('generation_invalid', 'relaxation_error',
-                            'validation_invalid', 'validation_error', 'unreported')}
+                            'validation_invalid', 'validation_error',
+                            'unreported')}
             count = (len(valid) if self.config.peptides_per_site
                      else self.state['valid_count'])
             attempted = (site['attempted'] if self.config.peptides_per_site
@@ -233,68 +260,86 @@ class SamplingController:
     def _read_validation(self, directory, designs):
         csv_path, jsonl_path, _ = self._report_paths(directory)
         fields, rows, by_path = read_rows(csv_path, designs)
-        details = [json.loads(line) for line in jsonl_path.read_text().splitlines()
-                   if line.strip()]
-        if (len(details) != len(rows)
-                or {entry['result']['path'] for entry in details} != set(by_path)):
-            raise ValueError(f'Validation details differ from generated designs: {directory}')
+        lines = jsonl_path.read_text().splitlines()
+        details = [json.loads(line) for line in lines if line.strip()]
+        detail_paths = {entry['result']['path'] for entry in details}
+        if len(details) != len(rows) or detail_paths != set(by_path):
+            raise ValueError(
+                f'Validation details differ from generated designs: '
+                f'{directory}')
         accepted = []
         for row in rows:
             design = by_path[row['path']]
             if (int(row['site']) != design.site
                     or int(row['sample']) != design.sample):
-                raise ValueError(f'Invalid validation status or sample metadata: {csv_path}')
+                raise ValueError(
+                    f'Invalid validation status or sample metadata: '
+                    f'{csv_path}')
             if row['status'] != 'error':
+                input_sha256 = self.state['signature']['input_sha256']
                 if (row['peptide_chain'] != design.peptide_chain
                         or row['sha256'] != sha256(design.path)
-                        or row['input_sha256'] != self.state['signature']['input_sha256']):
-                    raise ValueError(f'Validation hashes or chains differ: {csv_path}')
+                        or row['input_sha256'] != input_sha256):
+                    raise ValueError(
+                        f'Validation hashes or chains differ: {csv_path}')
             if row['status'] == 'valid':
                 accepted.append(design)
         return accepted, fields, rows, details
 
     def _finish_round(self, site, entry, *, deadline, fresh=False):
         directory = self._directory(entry)
-        metadata = {'site': site['site'], 'start': entry['start'], 'count': entry['count']}
+        metadata = {'site': site['site'], 'start': entry['start'],
+                    'count': entry['count']}
         metadata_path = directory / 'round.json'
         if metadata_path.exists():
             if json.loads(metadata_path.read_text()) != metadata:
-                raise ValueError(f'Saved round metadata differs: {metadata_path}')
+                raise ValueError(
+                    f'Saved round metadata differs: {metadata_path}')
         elif entry['status'] != 'validated':
             atomic_json(metadata_path, metadata)
         else:
             raise ValueError(f'Saved round metadata missing: {metadata_path}')
         designs, records = load_round_outputs(
-            directory, site['site'], self.prefix, entry['start'], entry['count'],
-            partial=not fresh)
+            directory, site['site'], self.prefix, entry['start'],
+            entry['count'], partial=not fresh)
         for design in designs:
             if not is_relaxed(design.path):
-                raise RuntimeError(f'PepGLAD site {site["site"]} has unrelaxed samples; '
-                                   f'run python -m allopep.recover_relaxation on {directory}')
+                raise RuntimeError(
+                    f'PepGLAD site {site["site"]} has unrelaxed '
+                    f'samples; run python -m allopep.recover_relaxation '
+                    f'on {directory}')
         if entry['status'] == 'validated':
             for relative, expected in entry['hashes'].items():
                 path = directory / relative
                 if not path.is_file() or sha256(path) != expected:
-                    raise ValueError(f'Saved sampling artifact changed: {path}')
+                    raise ValueError(
+                        f'Saved sampling artifact changed: {path}')
         else:
             directory.mkdir(parents=True, exist_ok=True)
             self.validate_round(designs, directory, self.layout,
                                 self.config.peptide_chain, self.input_pdb,
                                 deadline=deadline, allow_errors=True)
-        accepted, fields, rows, details = self._read_validation(directory, designs)
+        accepted, fields, rows, details = self._read_validation(
+            directory, designs)
         if entry['status'] != 'validated':
-            paths = [*self._report_paths(directory), *(design.path for design in designs)]
+            paths = [*self._report_paths(directory),
+                     *(design.path for design in designs)]
             summary = directory / 'summary.jsonl'
             if summary.exists():
                 paths.append(summary)
             paths.append(directory / 'round.json')
-            entry['hashes'] = {str(path.relative_to(directory)): sha256(path) for path in paths}
+            entry['hashes'] = {
+                str(path.relative_to(directory)): sha256(path)
+                for path in paths}
             entry['status'] = 'validated'
+            statuses = [r.get('status') for r in records.values()]
             entry['failures'] = {
-                'generation_invalid': sum(r.get('status') == 'invalid' for r in records.values()),
-                'relaxation_error': sum(r.get('status') == 'error' for r in records.values()),
-                'validation_invalid': sum(row['status'] == 'invalid' for row in rows),
-                'validation_error': sum(row['status'] == 'error' for row in rows),
+                'generation_invalid': statuses.count('invalid'),
+                'relaxation_error': statuses.count('error'),
+                'validation_invalid': sum(
+                    row['status'] == 'invalid' for row in rows),
+                'validation_error': sum(
+                    row['status'] == 'error' for row in rows),
                 'unreported': entry['count'] - len(records),
             }
         self.accepted[site['site']].extend(accepted)
@@ -315,7 +360,8 @@ class SamplingController:
                 handle.write(json.dumps(detail) + '\n')
 
     def _write_manifest(self):
-        # Reconstruct on resume/completion, avoiding a growing JSON rewrite each round.
+        # Reconstruct on resume/completion, avoiding a growing JSON
+        # rewrite each round.
         _, _, destination = self._report_paths(self.layout.score_dir)
         with atomic_path(destination) as temporary:
             with temporary.open('w', encoding='utf-8') as handle:
@@ -325,7 +371,8 @@ class SamplingController:
                     for entry in site['rounds']:
                         if entry['status'] != 'validated':
                             continue
-                        manifest = self._report_paths(self._directory(entry))[2]
+                        round_dir = self._directory(entry)
+                        manifest = self._report_paths(round_dir)[2]
                         for row in json.loads(manifest.read_text()):
                             handle.write(separator + json.dumps(row))
                             separator = ',\n'
@@ -334,7 +381,8 @@ class SamplingController:
     def run(self):
         first_report = True
         try:
-            # Validate adopted/interrupted rounds once; reuse verified cached reports.
+            # Validate adopted/interrupted rounds once; reuse
+            # verified cached reports.
             for site in self.state['sites']:
                 for entry in site['rounds']:
                     reports = self._finish_round(
@@ -344,10 +392,14 @@ class SamplingController:
             self._save()
             while True:
                 scheduled = False
-                # Resume at sites with fewer rounds before revisiting others.
+                # Resume at sites with fewer rounds before
+                # revisiting others.
                 for site in sorted(self.state['sites'], key=lambda s: (
                         len(s['rounds']), s['site'])):
-                    previous = site['rounds'][-1]['count'] if site['rounds'] else 8
+                    if site['rounds']:
+                        previous = site['rounds'][-1]['count']
+                    else:
+                        previous = 8
                     target, cap = self.target, self.cap
                     if not self.config.peptides_per_site:
                         target = (site['valid_count'] + self.target
@@ -362,14 +414,25 @@ class SamplingController:
                     directory = self.layout.round_dir(
                         site['site'], len(site['rounds']) + 1)
                     if directory.exists():
-                        raise FileExistsError(f'Refusing to overwrite sampling round: {directory}')
-                    entry = {'directory': str(directory.relative_to(self.out_dir)),
-                             'start': site['attempted'], 'count': count, 'status': 'reserved'}
+                        raise FileExistsError(
+                            f'Refusing to overwrite sampling round: '
+                            f'{directory}')
+                    relative = directory.relative_to(self.out_dir)
+                    entry = {
+                        'directory': str(relative),
+                        'start': site['attempted'],
+                        'count': count,
+                        'status': 'reserved',
+                    }
                     site['rounds'].append(entry)
-                    self._save()  # Charge the entire range before starting any subprocess.
+                    # Charge the entire range before starting any
+                    # subprocess.
+                    self._save()
                     directory.mkdir(parents=True)
-                    atomic_json(directory / 'round.json',
-                                {'site': site['site'], 'start': entry['start'], 'count': count})
+                    atomic_json(
+                        directory / 'round.json',
+                        {'site': site['site'], 'start': entry['start'],
+                         'count': count})
                     scope = ('per site' if self.config.peptides_per_site
                              else 'across sites')
                     print(
@@ -379,11 +442,13 @@ class SamplingController:
                         flush=True)
                     deadline = time.monotonic() + self.timeout
                     pocket_file = self.layout.pocket_file(site['site'])
-                    self.generate_round(self.config, self.input_pdb, pocket_file,
-                                        directory, count, deadline=deadline)
+                    self.generate_round(
+                        self.config, self.input_pdb, pocket_file,
+                        directory, count, deadline=deadline)
                     entry['status'] = 'generated'
                     self._save()
-                    reports = self._finish_round(site, entry, deadline=deadline, fresh=True)
+                    reports = self._finish_round(
+                        site, entry, deadline=deadline, fresh=True)
                     self._append_reports(reports, reset=first_report)
                     first_report = False
                     print(

@@ -1,4 +1,4 @@
-"""Run GAPS and group high-scoring surface residues into connected pockets."""
+"""Run GAPS and group high-scoring surface residues into pockets."""
 
 import json
 import math
@@ -16,8 +16,9 @@ from .layout import REPO_ROOT
 _MINIMUM_GAPS_SCORE = 0.5
 _MINIMUM_POCKET_SASA = 0.0
 _POCKET_CONNECTION_RADIUS = 8.0
-# GAPS stores float32 C-alpha coordinates of three-decimal PDB values, so a
-# faithful sidecar round-trips well inside this tolerance.
+# GAPS stores float32 C-alpha coordinates of three-decimal PDB
+# values, so a faithful sidecar round-trips well inside this
+# tolerance.
 _CA_TOLERANCE_A = 0.01
 
 
@@ -40,7 +41,7 @@ class ScoredResidue:
 
 @dataclass(frozen=True)
 class GuidanceContext:
-    """A connected pocket and its highest-scoring member as a reference."""
+    """A connected pocket and its highest-scoring member."""
 
     seed: ScoredResidue
     residues: tuple[ScoredResidue, ...]
@@ -62,7 +63,8 @@ def _residue_sasa(residue, areas):
 def load_score_records(scores_json):
     """Read the GAPS score sidecar and check only its schema."""
     payload = json.loads(Path(scores_json).read_text(encoding='utf-8'))
-    if (not isinstance(payload, dict) or type(payload.get('schema_version')) is not int
+    if (not isinstance(payload, dict)
+            or type(payload.get('schema_version')) is not int
             or payload['schema_version'] != 1
             or not isinstance(payload.get('residues'), list)):
         raise ValueError(f'Invalid GAPS score sidecar: {scores_json}')
@@ -72,7 +74,8 @@ def load_score_records(scores_json):
 def load_structure_model(input_pdb):
     """Parse a receptor PDB and return its structure and first model."""
     input_pdb = Path(input_pdb)
-    structure = PDBParser(QUIET=True).get_structure(input_pdb.stem, str(input_pdb))
+    structure = PDBParser(QUIET=True).get_structure(
+        input_pdb.stem, str(input_pdb))
     model = next(structure.get_models(), None)
     if model is None:
         raise ValueError(f'No model found in {input_pdb}')
@@ -81,7 +84,7 @@ def load_structure_model(input_pdb):
 
 @dataclass(frozen=True)
 class CheckedRecord:
-    """One sidecar record verified against the unmodified input structure."""
+    """One sidecar record verified against the input structure."""
 
     chain: str
     number: int
@@ -125,7 +128,8 @@ def checked_residue(record, model, seen):
     try:
         residue = model[chain][(' ', number, icode)]
     except KeyError as exc:
-        raise ValueError(f'GAPS residue missing from input PDB: {key}') from exc
+        raise ValueError(
+            f'GAPS residue missing from input PDB: {key}') from exc
     if residue.resname != resname:
         raise ValueError(f'GAPS residue type differs from input PDB: {key}')
     if ca is None:
@@ -134,7 +138,8 @@ def checked_residue(record, model, seen):
     if 'CA' not in residue or not isinstance(ca, list) or len(ca) != 3:
         raise ValueError(f'Invalid C-alpha mapping for GAPS residue: {key}')
     if not all(type(x) in (int, float) and math.isfinite(x) for x in ca):
-        raise ValueError(f'Invalid C-alpha coordinates for GAPS residue: {key}')
+        raise ValueError(
+            f'Invalid C-alpha coordinates for GAPS residue: {key}')
     if math.dist(residue['CA'].coord, ca) > _CA_TOLERANCE_A:
         raise ValueError(
             f'GAPS score coordinates differ from original PDB: {key}')
@@ -143,7 +148,7 @@ def checked_residue(record, model, seen):
 
 
 def load_scored_residues(input_pdb, scores_json):
-    """Check full-precision GAPS records against the original receptor PDB."""
+    """Check full-precision GAPS records against the receptor PDB."""
     records = load_score_records(scores_json)
     structure, model = load_structure_model(input_pdb)
     areas = freesasa.calcBioPDB(structure)[0].residueAreas()
@@ -164,7 +169,11 @@ def load_scored_residues(input_pdb, scores_json):
 
 
 def select_contexts(residues, max_rank='all'):
-    """Rank groups with GAPS score >0.5, absolute SASA >0 and C-alpha links <=8 Å."""
+    """Rank connected pockets of eligible surface residues.
+
+    A residue is eligible with GAPS score >0.5 and absolute SASA >0;
+    members are linked by C-alpha distances <=8 Å.
+    """
     if max_rank != 'all' and (type(max_rank) is not int or max_rank < 1):
         raise ValueError('max_rank must be a positive integer or "all"')
     eligible = sorted(
@@ -204,8 +213,9 @@ def select_contexts(residues, max_rank='all'):
 
 
 def select_guidance_contexts(input_pdb, scores_json, max_rank='all'):
-    """Load full-precision scores and select connected surface pockets."""
-    return select_contexts(load_scored_residues(input_pdb, scores_json), max_rank)
+    """Load full-precision scores and select surface pockets."""
+    return select_contexts(
+        load_scored_residues(input_pdb, scores_json), max_rank)
 
 
 def run_gaps(pdb_filepath, out_dir='.', pytorch_device='cuda'):

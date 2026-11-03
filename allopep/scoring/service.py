@@ -61,26 +61,30 @@ class ScoringService:
         source = job.source
         if source.receptor_chains:
             return source.receptor_chains
+        available = self.preparer.selector.available_chains(source.path)
         chains = tuple(
-            chain for chain in self.preparer.selector.available_chains(source.path)
+            chain for chain in available
             if chain != source.peptide_chain)
         if not chains:
             raise ValueError(f"Job {job.job_id!r} selected no receptor chains")
         return chains
 
-    def _prepare_receptor(self, job: ScoreJob, directory: Path) -> PreparedComponent:
+    def _prepare_receptor(self, job: ScoreJob,
+                          directory: Path) -> PreparedComponent:
         return self.preparer.prepare_component(
             job.source.path, directory, self._receptor_chains(job))
 
-    def _prepare_peptide(self, job: ScoreJob, directory: Path) -> PreparedComponent:
+    def _prepare_peptide(self, job: ScoreJob,
+                         directory: Path) -> PreparedComponent:
         return self.preparer.prepare_component(
             job.source.path, directory, (job.source.peptide_chain,),
             as_ligand=True)
 
     def score_job(self, job: ScoreJob) -> ScoreSuccess:
-        """Score a pose without docking or changing supplied coordinates."""
+        """Score a pose without docking or changing coordinates."""
         job.validate_files()
-        with tempfile.TemporaryDirectory(prefix="vina-rigid-score-") as temporary:
+        with tempfile.TemporaryDirectory(
+                prefix="vina-rigid-score-") as temporary:
             directory = Path(temporary)
             receptor = self._prepare_receptor(job, directory / "receptor")
             peptide = self._prepare_peptide(job, directory / "peptide")
@@ -128,13 +132,14 @@ class BatchRunner:
             raise ValueError("Memory budget must be positive")
 
     def _preflight(self, job: ScoreJob) -> ScoreOutcome | None:
-        """Reject a job whose maps cannot fit, instead of being killed."""
+        """Reject a job whose maps cannot fit, avoiding a kill."""
         try:
             estimate = ScoringService(self.config).estimate_job_memory(job)
             if estimate > self.memory_budget_bytes:
+                budget = self.memory_budget_bytes / 1024**3
                 raise ValueError(
-                    f"Estimated memory {estimate / 1024**3:.2f} GiB exceeds the "
-                    f"batch budget of {self.memory_budget_bytes / 1024**3:.2f} GiB")
+                    f"Estimated memory {estimate / 1024**3:.2f} GiB "
+                    f"exceeds the batch budget of {budget:.2f} GiB")
         except Exception as exc:  # noqa: BLE001 - isolate each job
             return failure(job, self.config, exc)
         return None
@@ -157,14 +162,16 @@ class BatchRunner:
             context = multiprocessing.get_context("spawn")
             with ProcessPoolExecutor(max_workers=1, mp_context=context,
                                      max_tasks_per_child=1) as executor:
-                futures = [(job, executor.submit(score_job_safely, job, self.config))
-                           for job in runnable]
+                futures = [
+                    (job, executor.submit(score_job_safely, job, self.config))
+                    for job in runnable]
                 for job, future in futures:
                     try:
                         outcome = future.result()
                     except Exception as exc:  # noqa: BLE001 - child failure
-                        outcome = failure(job, self.config,
-                                          RuntimeError(f"Worker failure: {exc}"))
+                        outcome = failure(
+                            job, self.config,
+                            RuntimeError(f"Worker failure: {exc}"))
                     results.append(outcome)
                     if on_result is not None:
                         on_result(outcome)

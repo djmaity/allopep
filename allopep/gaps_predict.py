@@ -21,11 +21,12 @@ from .layout import REPO_ROOT
 
 
 def score_records(structure, probabilities):
-    """Pair raw residue probabilities with PDB identities before B-factor export."""
+    """Pair raw residue probabilities with PDB identities."""
     scores = np.asarray(probabilities).reshape(-1)
     internal_ids = np.unique(structure['resid'])
     if len(scores) != len(internal_ids):
-        raise ValueError('GAPS score count differs from preprocessed residue count')
+        raise ValueError(
+            'GAPS score count differs from preprocessed residue count')
 
     records = []
     seen = set()
@@ -39,7 +40,8 @@ def score_records(structure, probabilities):
             for i in indices
         }
         if len(identities) != 1:
-            raise ValueError(f'GAPS residue {internal_id} has ambiguous PDB identity')
+            raise ValueError(
+                f'GAPS residue {internal_id} has ambiguous PDB identity')
         chain, number, icode, resname = identities.pop()
         key = (chain, number, icode)
         if key in seen:
@@ -78,7 +80,8 @@ def run_prediction(pdb_filepath, out_dir, pytorch_device='cuda'):
             q = en_features(structure)[0]
             ids_topk, _, _, _, _ = ext_topology(X, 64)
             X, ids_topk, q, M = col_batch([[X, ids_topk, q, M]])
-            z = model(X.to(device), ids_topk.to(device), q.to(device), M.float().to(device))
+            z = model(X.to(device), ids_topk.to(device),
+                      q.to(device), M.float().to(device))
             p = pt.sigmoid(z)
             raw_scores = p.cpu().numpy()
             scores_file = out_dir / (Path(filepath).stem + '_GAPS_scores.json')
@@ -92,7 +95,8 @@ def run_prediction(pdb_filepath, out_dir, pytorch_device='cuda'):
 
 
 def main():
-    parser = argparse.ArgumentParser(description='GAPS binding-site prediction')
+    parser = argparse.ArgumentParser(
+        description='GAPS binding-site prediction')
     parser.add_argument('-p', '--pdb', required=True, type=Path)
     parser.add_argument('-o', '--out-dir', required=True, type=Path)
     parser.add_argument('-d', '--device', default='cuda')

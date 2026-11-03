@@ -58,7 +58,7 @@ class ScoreSuccess:
 
 @dataclass(frozen=True)
 class ScoreFailure:
-    """An isolated job failure that can be serialized beside successes."""
+    """An isolated job failure, serialized beside successes."""
 
     job: ScoreJob
     config: WorkflowConfig
@@ -68,7 +68,8 @@ class ScoreFailure:
 ScoreOutcome = ScoreSuccess | ScoreFailure
 
 
-def failure(job: ScoreJob, config: WorkflowConfig, exc: Exception) -> ScoreFailure:
+def failure(job: ScoreJob, config: WorkflowConfig,
+            exc: Exception) -> ScoreFailure:
     """Keep exception type in a per-job diagnostic."""
     return ScoreFailure(job, config, f"{type(exc).__name__}: {exc}")
 
@@ -102,7 +103,8 @@ def result_record(outcome: ScoreOutcome) -> dict[str, Any]:
     warnings = list(dict.fromkeys(
         receptor_metadata["warnings"] + peptide_metadata["warnings"]))
     if not source.receptor_chains:
-        warnings.insert(0, "Receptor chains were inferred as every non-peptide chain.")
+        warnings.insert(
+            0, "Receptor chains were inferred as every non-peptide chain.")
     record.update({
         "receptor_chains": ";".join(receptor_metadata["chains"]),
         "warnings": " | ".join(warnings),

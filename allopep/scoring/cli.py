@@ -13,7 +13,7 @@ from .models import CombinedStructure, ScoreJob, WorkflowConfig
 
 
 def argument_parser(argv: Sequence[str] | None = None) -> argparse.Namespace:
-    """Parse one combined PDB/mmCIF complex and its preparation settings."""
+    """Parse a combined PDB/mmCIF complex and preparation settings."""
     parser = argparse.ArgumentParser(
         prog="python -m allopep.scoring", description=(
             "Score supplied protein-peptide coordinates with Vina. Receptor "
@@ -87,7 +87,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     """Score one rigid pose and report it as JSON."""
     args = argument_parser(argv)
     try:
-        # Set thread limits before loading NumPy or native scoring libraries.
+        # Set thread limits before NumPy or native libraries load.
         os.environ.update({"OMP_NUM_THREADS": "1", "OPENBLAS_NUM_THREADS": "1",
                            "MKL_NUM_THREADS": "1", "NUMEXPR_NUM_THREADS": "1"})
         from .records import ScoreFailure, result_record

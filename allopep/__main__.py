@@ -6,7 +6,7 @@ from .cli import main
 
 
 def run():
-    """Run the pipeline and return its exit code, reporting any failure."""
+    """Run the pipeline, reporting any failure as exit code 1."""
     try:
         return main()
     except Exception as exc:

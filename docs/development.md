@@ -69,6 +69,21 @@ For installer syntax:
 bash -n install.sh
 ```
 
+## Check line widths
+
+Ruff enforces the width limits configured in `pyproject.toml`: 79 columns
+for code and 72 for comments and docstrings.
+
+```bash
+conda run --no-capture-output -n allopep ruff check allopep/
+```
+
+Ruff is used only as a detector. Do not run `ruff format` or another
+formatter on this repository: it would reflow the many lines that are
+already within the limits, producing a diff far larger than the problem.
+Fix reported lines by hand. The `allopep` package is clean; `tests/` still
+has known violations and is not yet part of this check.
+
 Because the package is imported from three environments, check that the two
 foreign ones can still load it after changing imports:
 

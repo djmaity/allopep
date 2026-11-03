@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """OpenStructure checks for PepGLAD receptor-peptide complexes.
 
-Run with ``ost allopep/validation.py --manifest ... --csv ... --jsonl ...``.
-Hydrogens are excluded from stereochemistry checks: OpenMM's hydrogen bond
-lengths can disagree with OpenStructure's reference tables after relaxation.
+Run with ``ost allopep/validation.py`` and the --manifest, --csv and
+--jsonl options.
+
+Hydrogens are excluded from stereochemistry checks: OpenMM's
+hydrogen bond lengths can disagree with OpenStructure's reference
+tables after relaxation.
 """
 
 import argparse
@@ -45,7 +48,8 @@ FIELDS = (
     'contact_residues_4a', 'contact_residues_5a',
     'receptor_contact_residues_4a', 'receptor_contact_residues_5a',
     'minimum_interface_distance_a', 'buried_sasa_a2',
-    'receptor_ca_count', 'receptor_ca_rmsd_a', 'receptor_ca_max_displacement_a',
+    'receptor_ca_count', 'receptor_ca_rmsd_a',
+    'receptor_ca_max_displacement_a',
 )
 
 
@@ -107,19 +111,23 @@ def _peptide_geometry(peptide, details):
             atoms = [residue.FindAtom(name) for name in ('CA', 'N', 'C', 'CB')]
             if all(atom.IsValid() for atom in atoms):
                 ca, n, c, cb = (_position(atom) for atom in atoms)
-                # L amino acids have a positive signed volume in this order.
+                # L amino acids have a positive signed volume
+                # in this order.
                 volume = float(np.dot(np.cross(n - ca, c - ca), cb - ca))
                 if volume < -0.5:
                     details['inverted_ca'].append({
-                        'residue': residue_id, 'signed_volume_a3': round(volume, 3),
+                        'residue': residue_id,
+                        'signed_volume_a3': round(volume, 3),
                     })
                 elif volume <= 0.5:
                     details['flat_ca'].append({
-                        'residue': residue_id, 'signed_volume_a3': round(volume, 3),
+                        'residue': residue_id,
+                        'signed_volume_a3': round(volume, 3),
                     })
             else:
                 details['flat_ca'].append({
-                    'residue': residue_id, 'reason': 'missing chiral-center atom',
+                    'residue': residue_id,
+                    'reason': 'missing chiral-center atom',
                 })
         for atom in residue.atoms:
             if atom.element not in ('H', 'D'):
@@ -140,19 +148,24 @@ def _peptide_geometry(peptide, details):
 def _sequence_and_atoms(peptide, expected, details):
     observed = ''.join(residue.one_letter_code for residue in peptide.residues)
     if observed != expected:
-        details['sequence_mismatches'].append({'expected': expected, 'observed': observed})
+        details['sequence_mismatches'].append(
+            {'expected': expected, 'observed': observed})
     library = conop.GetDefaultLib()
     for residue in peptide.residues:
         compound = library.FindCompound(residue.name)
         if compound is None:
-            raise ValueError(f'No atom definition for peptide residue {residue.name}')
+            raise ValueError(
+                f'No atom definition for peptide residue {residue.name}')
         required = {atom.name for atom in compound.atom_specs
                     if atom.element not in ('H', 'D') and atom.name != 'OXT'}
-        actual = {atom.name for atom in residue.atoms if atom.element not in ('H', 'D')}
+        actual = {atom.name for atom in residue.atoms
+                  if atom.element not in ('H', 'D')}
         missing = sorted(required - actual)
         if missing:
+            residue_id = (f'{peptide.name}.{residue.number.num}.'
+                          f'{residue.name}')
             details['missing_heavy_atoms'].append({
-                'residue': f'{peptide.name}.{residue.number.num}.{residue.name}',
+                'residue': residue_id,
                 'atoms': missing,
             })
 
@@ -162,7 +175,8 @@ def _conformation(path, peptide, details):
     for name, validator in (('rama', ramalyze.ramalyze),
                             ('rotamer', rotalyze.rotalyze)):
         checked = validator(hierarchy, quiet=True)
-        results = [item for item in checked.results if item.chain_id == peptide.name]
+        results = [item for item in checked.results
+                   if item.chain_id == peptide.name]
         details[f'{name}_evaluated'] = len(results)
         details[f'{name}_outliers'] = [
             {'residue': f'{item.chain_id}.{item.resid.strip()}.{item.resname}',
@@ -200,7 +214,8 @@ def _receptor_displacement(entity, input_pdb, receptor_names):
     for name in receptor_names:
         old, new = original.FindChain(name), entity.FindChain(name)
         if not old.IsValid() or not new.IsValid():
-            raise ValueError(f'Missing receptor chain {name} in input or model')
+            raise ValueError(
+                f'Missing receptor chain {name} in input or model')
         if [r.name for r in old.residues] != [r.name for r in new.residues]:
             raise ValueError(f'Receptor sequence differs in chain {name}')
         for before, after in zip(old.residues, new.residues):
@@ -210,23 +225,30 @@ def _receptor_displacement(entity, input_pdb, receptor_names):
             reference.append(_position(old_ca))
             model.append(_position(new_ca))
     if len(reference) < 3:
-        raise ValueError('At least three receptor CA atoms are needed for alignment')
+        raise ValueError(
+            'At least three receptor CA atoms are needed for alignment')
     reference, model = np.asarray(reference), np.asarray(model)
     x, y = model - model.mean(axis=0), reference - reference.mean(axis=0)
     u, _, vt = np.linalg.svd(x.T @ y)
     rotation = u @ np.diag([1, 1, np.linalg.det(u @ vt)]) @ vt
     deviations = np.linalg.norm(x @ rotation - y, axis=1)
-    return len(deviations), float(np.sqrt(np.mean(deviations ** 2))), float(deviations.max())
+    rmsd = float(np.sqrt(np.mean(deviations ** 2)))
+    return len(deviations), rmsd, float(deviations.max())
 
 
 def _collect_metrics(entry, peptide_chain=None):
     """Measure one complex without applying the validation policy."""
     path = Path(entry['path']).resolve()
     input_pdb = Path(entry['input_pdb']).resolve()
-    result = {'path': str(path), 'sha256': hashlib.sha256(path.read_bytes()).hexdigest(),
-              'input_pdb': str(input_pdb),
-              'input_sha256': hashlib.sha256(input_pdb.read_bytes()).hexdigest(),
-              'ost_version': ost.__version__, 'site': entry['site'], 'sample': entry['sample']}
+    result = {
+        'path': str(path),
+        'sha256': hashlib.sha256(path.read_bytes()).hexdigest(),
+        'input_pdb': str(input_pdb),
+        'input_sha256': hashlib.sha256(input_pdb.read_bytes()).hexdigest(),
+        'ost_version': ost.__version__,
+        'site': entry['site'],
+        'sample': entry['sample'],
+    }
     entity = io.LoadPDB(str(path))
     chains = [chain for chain in entity.chains if chain.residues]
     if not chains:
@@ -236,7 +258,9 @@ def _collect_metrics(entry, peptide_chain=None):
         raise ValueError('Peptide chain override differs from PepGLAD summary')
     peptides = [chain for chain in chains if chain.name == peptide_chain]
     if len(peptides) != 1 or len(chains) < 2:
-        raise ValueError(f'Expected peptide chain {peptide_chain} and receptor chain(s)')
+        raise ValueError(
+            f'Expected peptide chain {peptide_chain} and receptor '
+            'chain(s)')
     receptor_names = entry['rec_chains']
     if {chain.name for chain in chains} != {*receptor_names, peptide_chain}:
         raise ValueError('Complex chains differ from PepGLAD summary')
@@ -250,12 +274,16 @@ def _collect_metrics(entry, peptide_chain=None):
         'missing_backbone_atoms': [], 'backbone_breaks': [],
         'sequence_mismatches': [], 'missing_heavy_atoms': [],
         'omega_unassessable': [], 'twisted_peptide_bonds': [],
-        'cis_peptide_bonds': [], 'nonpro_cis_peptide_bonds': [], 'omega_bonds': [],
+        'cis_peptide_bonds': [], 'nonpro_cis_peptide_bonds': [],
+        'omega_bonds': [],
     })
     for scope in ('peptide', 'interface', 'receptor'):
-        result[f'{scope}_clashes'] = sum(x['scope'] == scope for x in details['clashes'])
-    result['peptide_bad_bonds'] = sum(x['scope'] != 'receptor' for x in details['bad_bonds'])
-    result['peptide_bad_angles'] = sum(x['scope'] != 'receptor' for x in details['bad_angles'])
+        result[f'{scope}_clashes'] = sum(
+            x['scope'] == scope for x in details['clashes'])
+    result['peptide_bad_bonds'] = sum(
+        x['scope'] != 'receptor' for x in details['bad_bonds'])
+    result['peptide_bad_angles'] = sum(
+        x['scope'] != 'receptor' for x in details['bad_angles'])
 
     peptide_atoms, residue_for_atom = _peptide_geometry(peptide, details)
     _sequence_and_atoms(peptide, entry['pep_seq'], details)
@@ -282,7 +310,8 @@ def _collect_metrics(entry, peptide_chain=None):
         result[f'contact_residues_{label}'] = len({
             residue_for_atom[i] for i in np.flatnonzero(contacts.any(axis=1))})
         result[f'receptor_contact_residues_{label}'] = len({
-            receptor_residue_for_atom[i] for i in np.flatnonzero(contacts.any(axis=0))})
+            receptor_residue_for_atom[i]
+            for i in np.flatnonzero(contacts.any(axis=0))})
     rec_view = entity.Select('cname=' + ','.join(receptor_names))
     pep_view = entity.Select('cname=' + peptide_chain)
     complex_sasa = Accessibility(entity)
@@ -297,17 +326,20 @@ def _collect_metrics(entry, peptide_chain=None):
     result['receptor_ca_count'] = count
     result['receptor_ca_rmsd_a'] = round(rmsd, 3)
     result['receptor_ca_max_displacement_a'] = round(maximum, 3)
-    for key in ('inverted_ca', 'flat_ca', 'missing_backbone_atoms', 'backbone_breaks',
-                'sequence_mismatches', 'missing_heavy_atoms', 'rama_outliers',
-                'rotamer_outliers', 'omega_unassessable', 'twisted_peptide_bonds',
-                'cis_peptide_bonds', 'nonpro_cis_peptide_bonds'):
+    for key in ('inverted_ca', 'flat_ca', 'missing_backbone_atoms',
+                'backbone_breaks', 'sequence_mismatches',
+                'missing_heavy_atoms', 'rama_outliers',
+                'rotamer_outliers', 'omega_unassessable',
+                'twisted_peptide_bonds', 'cis_peptide_bonds',
+                'nonpro_cis_peptide_bonds'):
         result[key] = len(details[key])
     result['missing_heavy_atoms'] = sum(
         len(item['atoms']) for item in details['missing_heavy_atoms'])
     for key in ('rama_evaluated', 'rotamer_evaluated', 'omega_evaluated'):
         result[key] = details[key]
     result['max_omega_planarity_deviation_degrees'] = max(
-        (bond['planarity_deviation_degrees'] for bond in details['omega_bonds']),
+        (bond['planarity_deviation_degrees']
+         for bond in details['omega_bonds']),
         default=None)
 
     return result, details
@@ -318,8 +350,9 @@ def validation_reasons(metrics):
     reasons = [key for key in ('peptide_clashes', 'interface_clashes',
                'peptide_bad_bonds', 'peptide_bad_angles', 'inverted_ca',
                'flat_ca', 'missing_backbone_atoms', 'backbone_breaks',
-               'sequence_mismatches', 'missing_heavy_atoms', 'rama_outliers',
-               'rotamer_outliers', 'omega_unassessable', 'twisted_peptide_bonds',
+               'sequence_mismatches', 'missing_heavy_atoms',
+               'rama_outliers', 'rotamer_outliers', 'omega_unassessable',
+               'twisted_peptide_bonds',
                'nonpro_cis_peptide_bonds') if metrics[key]]
     if metrics['contact_residues_5a'] == 0:
         reasons.append('no_receptor_contact_5a')
@@ -336,7 +369,7 @@ def validate_structure(entry, peptide_chain=None):
 
 
 def _validate_entry(task):
-    """Keep a failed complex in the report instead of aborting the batch."""
+    """Keep a failed complex in the report, not aborting the batch."""
     entry, peptide_chain = task
     try:
         return validate_structure(entry, peptide_chain)
@@ -351,34 +384,40 @@ def validation_worker_count(entry_count):
     """Use available cores while reserving memory for each complex."""
     if entry_count < 2:
         return 1
-    available_cpus = (len(os.sched_getaffinity(0)) if hasattr(os, 'sched_getaffinity')
-                      else os.cpu_count() or 1)
+    if hasattr(os, 'sched_getaffinity'):
+        available_cpus = len(os.sched_getaffinity(0))
+    else:
+        available_cpus = os.cpu_count() or 1
     memory_workers = max(1, psutil.virtual_memory().available // (1024 ** 3))
     return min(entry_count, available_cpus, memory_workers)
 
 
 def validate_manifest(entries, peptide_chain=None, workers=None):
-    """Validate independent complexes in parallel, preserving manifest order."""
+    """Validate complexes in parallel, preserving manifest order."""
     entries = list(entries)
-    workers = validation_worker_count(len(entries)) if workers is None else workers
+    if workers is None:
+        workers = validation_worker_count(len(entries))
     tasks = ((entry, peptide_chain) for entry in entries)
     if workers == 1:
         yield from map(_validate_entry, tasks)
     else:
-        # ost runs this script via exec(...), so fork retains its loaded native
-        # modules and avoids trying to import the script as __main__ in a child.
+        # ost runs this script via exec(...), so fork retains its
+        # loaded native modules and avoids trying to import the
+        # script as __main__ in a child.
+        fork = multiprocessing.get_context('fork')
         with ProcessPoolExecutor(max_workers=workers,
-                                 mp_context=multiprocessing.get_context('fork')) as pool:
+                                 mp_context=fork) as pool:
             yield from pool.map(_validate_entry, tasks)
 
 
 def write_reports(reports, csv_path, jsonl_path):
-    """Serialize the established CSV and detailed JSONL report formats."""
+    """Serialize the CSV and detailed JSONL report formats."""
     rows = []
     with Path(jsonl_path).open('w', encoding='utf-8') as handle:
         for result, details in reports:
             rows.append(result)
-            handle.write(json.dumps({'result': result, 'details': details}) + '\n')
+            handle.write(
+                json.dumps({'result': result, 'details': details}) + '\n')
     with Path(csv_path).open('w', newline='', encoding='utf-8') as handle:
         writer = csv.DictWriter(handle, fieldnames=FIELDS)
         writer.writeheader()
@@ -397,7 +436,8 @@ def main():
     workers = validation_worker_count(len(manifest))
     print(f'Validating {len(manifest)} complexes with {workers} worker(s)')
     rows = write_reports(
-        validate_manifest(manifest, args.peptide_chain, workers), args.csv, args.jsonl)
+        validate_manifest(manifest, args.peptide_chain, workers),
+        args.csv, args.jsonl)
     print(f'OpenStructure checked {len(rows)} complexes: '
           f'{sum(r["status"] == "valid" for r in rows)} valid, '
           f'{sum(r["status"] == "invalid" for r in rows)} invalid, '

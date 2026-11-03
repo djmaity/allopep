@@ -18,8 +18,9 @@ def _remember_children(pid, children):
 
 
 def _stop_tree(process, children):
-    # Ray may start descendants in a separate session. Remember those processes
-    # while the parent is alive, and use Process identities to avoid PID reuse.
+    # Ray may start descendants in a separate session. Remember
+    # those processes while the parent is alive, and use Process
+    # identities to avoid PID reuse.
     _remember_children(process.pid, children)
     try:
         os.killpg(process.pid, signal.SIGTERM)
@@ -44,11 +45,12 @@ def _stop_tree(process, children):
 
 
 def run_logged(command, *, log_file, deadline, cwd=None, env=None):
-    """Run until an absolute monotonic deadline; retain output even on failure."""
+    """Run to an absolute monotonic deadline; keep output on failure."""
     log_file = Path(log_file)
     log_file.parent.mkdir(parents=True, exist_ok=True)
     if time.monotonic() >= deadline:
-        raise TimeoutError(f'Round deadline expired before launching {command[0]}')
+        raise TimeoutError(
+            f'Round deadline expired before launching {command[0]}')
     children = {}
     with log_file.open('w', encoding='utf-8') as handle:
         process = subprocess.Popen(

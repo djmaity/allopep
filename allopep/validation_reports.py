@@ -27,17 +27,19 @@ def write_manifest(designs, path, input_pdb):
         'pep_seq': design.sequence, 'pep_chain': design.peptide_chain,
         'rec_chains': list(design.receptor_chains),
     } for design in designs]
-    Path(path).write_text(json.dumps(entries, indent=2) + '\n', encoding='utf-8')
+    Path(path).write_text(
+        json.dumps(entries, indent=2) + '\n', encoding='utf-8')
     return entries
 
 
 def run_ost(manifest, csv_file, jsonl_file, peptide_chain, *,
             deadline=None, log_file=None):
-    """Run the validator under ost, with a deadline when one is given."""
+    """Run the validator under ost, with an optional deadline."""
     ost = shutil.which('ost')
     if ost is None:
         raise FileNotFoundError(
-            'OpenStructure ost executable not found in the AlloPep environment.'
+            'OpenStructure ost executable not found in the AlloPep '
+            'environment.'
         )
     command = [ost, str(PACKAGE_DIR / 'validation.py'),
                '--manifest', str(Path(manifest).resolve()),

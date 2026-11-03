@@ -1,8 +1,9 @@
 """Content hashing and atomic file replacement.
 
-Every report and state file the pipeline writes is published by renaming a
-completed temporary file over the destination, so an interrupted write
-never leaves a partial artifact for a later resume to adopt.
+Every report and state file the pipeline writes is published by
+renaming a completed temporary file over the destination, so an
+interrupted write never leaves a partial artifact for a later
+resume to adopt.
 """
 
 import csv
@@ -26,7 +27,7 @@ def sha256(path):
 
 @contextmanager
 def atomic_path(path):
-    """Yield a temporary sibling path, published only on a clean exit."""
+    """Yield a temporary sibling path, published on a clean exit."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(path.name + '.tmp')
@@ -40,7 +41,7 @@ def atomic_path(path):
 
 @contextmanager
 def atomic_text(path, *, newline=None):
-    """Yield a text handle on a temporary sibling, flushed and fsynced."""
+    """Yield a flushed, fsynced text handle on a temporary sibling."""
     with atomic_path(path) as temporary:
         with temporary.open('w', encoding='utf-8', newline=newline) as handle:
             yield handle

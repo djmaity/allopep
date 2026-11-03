@@ -19,7 +19,8 @@ class CombinedStructure:
         if not self.peptide_chain:
             raise ValueError("A combined structure requires a peptide chain")
         if self.peptide_chain in self.receptor_chains:
-            raise ValueError("The peptide chain cannot also be a receptor chain")
+            raise ValueError(
+                "The peptide chain cannot also be a receptor chain")
 
 
 @dataclass(frozen=True)
@@ -39,10 +40,11 @@ class ScoreJob:
             raise TypeError("Job source must be a combined structure")
 
     def validate_files(self) -> None:
-        """Check existence in preflight so one missing file fails one job."""
+        """Check existence so one missing file fails only one job."""
         if not self.source.path.is_file():
             raise ValueError(
-                f"Job {self.job_id!r} input does not exist: {self.source.path}")
+                f"Job {self.job_id!r} input does not exist: "
+                f"{self.source.path}")
 
 
 @dataclass(frozen=True)
@@ -71,6 +73,7 @@ class WorkflowConfig:
             raise ValueError("Box padding must be finite and non-negative")
         if not math.isfinite(self.spacing) or self.spacing <= 0:
             raise ValueError("Grid spacing must be finite and positive")
-        if self.meeko_templates is not None and not self.meeko_templates.is_file():
+        if (self.meeko_templates is not None
+                and not self.meeko_templates.is_file()):
             raise ValueError(
                 f"Meeko template file does not exist: {self.meeko_templates}")

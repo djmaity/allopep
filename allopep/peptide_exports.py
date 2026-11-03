@@ -1,4 +1,4 @@
-"""Copy selected valid complexes and collect their user-facing results."""
+"""Copy selected valid complexes and collect user-facing results."""
 
 import csv
 import json
@@ -27,7 +27,7 @@ def _csv_rows(path):
 
 def export_peptides(designs, layout, input_pdb, *, scored=False,
                     scoring_error=''):
-    """Publish selected complexes, pocket properties, and score outcomes.
+    """Publish selected complexes, pocket properties, and scores.
 
     Pocket SASA sums residue areas measured in the original receptor.
     Only this helper's copied PDBs are refreshed; source PDBs stay put.
